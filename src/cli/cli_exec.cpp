@@ -13,6 +13,7 @@
 #include <regex>
 #include <string>
 #include <tl/enumerate.hpp>
+#include <unistd.h>
 
 #include "cli/cli.hpp"
 #include "util/cin_cout_cerr.hpp"
@@ -23,9 +24,15 @@ namespace dvlab {
 
 CmdExecResult CommandLineInterface::start_interactive() {
     auto status = dvlab::CmdExecResult::done;
+    // Piped stdin (heredoc, `echo ... | qsyn`) is not a TTY: run lines then exit on EOF
+    // instead of looping forever with empty prompts.
+    bool const stdin_is_piped = !isatty(STDIN_FILENO);
 
     while (status != dvlab::CmdExecResult::quit) {  // until "quit" or command error
         status = this->execute_one_line(std::cin, true);
+        if (stdin_is_piped && std::cin.eof()) {
+            break;
+        }
     }
 
     return get_last_return_status();
