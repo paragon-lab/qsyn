@@ -216,6 +216,10 @@ bool is_all_commutative(QubitHamiltonian const& hamilt);
 std::optional<qsyn::hamiltonian::QubitHamiltonian> read_qubit_hamiltonian(
     std::filesystem::path const& filepath);
 
+bool write_qubit_hamiltonian(
+    qsyn::hamiltonian::QubitHamiltonian const& hamilt,
+    std::filesystem::path const& filepath);
+
 template <>
 struct fmt::formatter<std::complex<double>> {
     constexpr auto parse(format_parse_context& ctx) { return ctx.begin(); }

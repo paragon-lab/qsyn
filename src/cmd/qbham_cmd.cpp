@@ -16,6 +16,7 @@
 #include "cmd/qbham/read.hpp"
 #include "cmd/qbham/sort.hpp"
 #include "cmd/qbham/trotterize.hpp"
+#include "cmd/qbham/write.hpp"
 #include "cmd/qbham_mgr.hpp"
 #include "cmd/tableau_mgr.hpp"
 #include "hamiltonian/qubit_hamiltonian.hpp"
@@ -75,7 +76,7 @@ dvlab::Command qbham_cmd(device::DeviceMgr& device_mgr, QubitHamiltonianMgr& qbh
     cmd.add_subcommand("qbham-cmd-group", qbham_jw_cmd(qbham_mgr));
     cmd.add_subcommand("qbham-cmd-group", qbham_ternary_tree_cmd(qbham_mgr));
     cmd.add_subcommand("qbham-cmd-group", qbham_read_cmd(qbham_mgr));
-    // cmd.add_subcommand("qbham-cmd-group", qbham_write_cmd(qbham_mgr));
+    cmd.add_subcommand("qbham-cmd-group", qbham_write_cmd(qbham_mgr));
     cmd.add_subcommand("qbham-cmd-group", qbham_print_cmd(qbham_mgr));
     cmd.add_subcommand("qbham-cmd-group", qbham_trotterize_cmd(qbham_mgr, tableau_mgr));
     cmd.add_subcommand("qbham-cmd-group", qbham_sort_cmd(qbham_mgr));

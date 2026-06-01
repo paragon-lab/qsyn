@@ -154,3 +154,26 @@ std::optional<qsyn::hamiltonian::QubitHamiltonian> read_qubit_hamiltonian(
 
     return hamilt;
 }
+
+bool write_qubit_hamiltonian(
+    qsyn::hamiltonian::QubitHamiltonian const& hamilt,
+    std::filesystem::path const& filepath) {
+    using namespace qsyn::hamiltonian;
+
+    if (hamilt.n_terms() == 0) {
+        spdlog::error("Cannot write empty QubitHamiltonian.");
+        return false;
+    }
+
+    std::ofstream file(filepath);
+    if (!file.is_open()) {
+        spdlog::error("Cannot open file for writing: {}", filepath.string());
+        return false;
+    }
+
+    for (auto const& term : hamilt) {
+        file << term.coeff() << ' ' << term.pauli_product().to_string() << '\n';
+    }
+
+    return true;
+}
