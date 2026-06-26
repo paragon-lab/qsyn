@@ -15,6 +15,7 @@
 #include "cmd/fham_mgr.hpp"
 #include "device/device_analysis.hpp"
 #include "device/ibmq_devices.hpp"
+#include "hamiltonian/f2q_majorana.hpp"
 #include "hamiltonian/f2q_mappings.hpp"
 #include "hamiltonian/fermionic_hamiltonian.hpp"
 #include "hamiltonian/fham_workspace.hpp"
@@ -34,7 +35,7 @@ namespace {
 
 struct FhamQubitizeOutcome {
     QubitHamiltonian q_ham;
-    bool used_workspace_encoding;
+    bool used_workspace_encoding{false};
 };
 
 TernaryTree optimize_ternary_tree_mapping(
@@ -73,7 +74,7 @@ FhamQubitizeOutcome qubitize_fham_workspace(
     if (!strategy_explicit && workspace.encoding != nullptr) {
         if (auto* tt_enc = dynamic_cast<TernaryTreeMapping*>(workspace.encoding.get())) {
             if (optimize1 || optimize2) {
-                auto tree           = optimize_ternary_tree_mapping(tt_enc->tree(), f_ham, device_mgr, optimize1, optimize2);
+                auto tree          = optimize_ternary_tree_mapping(tt_enc->tree(), f_ham, device_mgr, optimize1, optimize2);
                 workspace.encoding = std::make_unique<TernaryTreeMapping>(std::move(tree));
             }
         } else if (optimize1 || optimize2) {
@@ -119,7 +120,7 @@ FhamQubitizeOutcome qubitize_fham_workspace(
         initial_tree = TernaryTree(f_ham.n_modes());
     }
 
-    auto tree             = optimize_ternary_tree_mapping(std::move(initial_tree.value()), f_ham, device_mgr, optimize1, optimize2);
+    auto tree          = optimize_ternary_tree_mapping(std::move(initial_tree.value()), f_ham, device_mgr, optimize1, optimize2);
     workspace.encoding = std::make_unique<TernaryTreeMapping>(std::move(tree));
     return {qubitize(f_ham, *workspace.encoding), false};
 }
@@ -204,9 +205,9 @@ dvlab::Command fham_qubitize_cmd(FermionHamiltonianMgr& fham_mgr, QubitHamiltoni
             } else {
                 auto const strategy_str = strategy_explicit ? parser.get<std::string>("--strategy") : "jw";
                 auto const strategy     = dvlab::str::tolower_string(strategy_str);
-                proc_name                 = dvlab::str::is_prefix_of(strategy, "ternary_tree")
-                                                ? "fham_qubitize_ternary_tree"
-                                                : "fham_qubitize_jw";
+                proc_name               = dvlab::str::is_prefix_of(strategy, "ternary_tree")
+                                              ? "fham_qubitize_ternary_tree"
+                                              : "fham_qubitize_jw";
             }
             if ((optimize1 || optimize2) &&
                 dynamic_cast<TernaryTreeMapping const*>(workspace->encoding.get()) != nullptr) {
@@ -248,6 +249,7 @@ void print_encoding_detail(FhamWorkspace const& workspace) {
         fmt::println("Clifford: identity on {} qubits", jw->n_modes());
     } else if (auto const* tt = dynamic_cast<TernaryTreeMapping const*>(workspace.encoding.get())) {
         fmt::println("Ternary tree mapping ({} modes)", tt->n_modes());
+        fmt::print("{}", format_logical_to_physical_mapping(tt->tree()));
         fmt::println("{}", to_string(tt->tree()));
     } else {
         fmt::println("Unknown encoding type ({} modes)", workspace.encoding->n_modes());
@@ -339,7 +341,9 @@ dvlab::Command fham_print_cmd(FermionHamiltonianMgr const& fham_mgr) {
             parser.description("Print the focused fermionic Hamiltonian");
             parser.add_argument<bool>("-v", "--verbose")
                 .action(store_true)
-                .help("display each term of the hamiltonian");
+                .help(
+                    "with --encoding: list JW Majorana Paulis and C P C† images; "
+                    "otherwise list each fermionic term");
             parser.add_argument<bool>("--encoding")
                 .action(store_true)
                 .help("display the workspace F2Q encoding in detail");
@@ -358,6 +362,15 @@ dvlab::Command fham_print_cmd(FermionHamiltonianMgr const& fham_mgr) {
 
             if (parser.parsed("--encoding")) {
                 print_encoding_detail(*workspace);
+                if (parser.parsed("--verbose")) {
+                    if (workspace->encoding == nullptr) {
+                        spdlog::error(
+                            "No encoding on focused FHam. Run `fham qubitize` or `fham treespile` first.");
+                        return dvlab::CmdExecResult::error;
+                    }
+                    print_majorana_encoding_correspondence(*workspace->encoding);
+                }
+                return dvlab::CmdExecResult::done;
             }
 
             if (!parser.parsed("--verbose")) {
