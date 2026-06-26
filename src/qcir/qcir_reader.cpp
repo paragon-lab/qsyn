@@ -44,7 +44,7 @@ std::optional<QCir> from_file(std::filesystem::path const& filepath) {
  *
  * @param filename
  */
-std::optional<QCir> from_qasm(std::filesystem::path const& filepath) {
+std::optional<QCir> from_qasm(std::filesystem::path const& filepath, double phase_eps) {
     using dvlab::str::str_get_token;
 
     // read file and open
@@ -122,7 +122,7 @@ std::optional<QCir> from_qasm(std::filesystem::path const& filepath) {
             continue;
         }
 
-        auto phase = dvlab::Phase::from_string(phase_str);
+        auto phase = dvlab::Phase::from_string<double>(phase_str, phase_eps);
         if (!phase.has_value()) {
             spdlog::error("invalid phase on line {}!!", str);
             return std::nullopt;
@@ -132,6 +132,9 @@ std::optional<QCir> from_qasm(std::filesystem::path const& filepath) {
             qcir.append(*op, qubit_ids);
             continue;
         }
+
+        spdlog::error("unsupported gate \"{}\" in line: {}", type, str);
+        return std::nullopt;
     }
     return qcir;
 }

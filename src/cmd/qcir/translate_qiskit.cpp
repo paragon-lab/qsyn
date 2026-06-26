@@ -17,9 +17,11 @@
 #include <string>
 #include <vector>
 
+#include "device/ibmq_devices.hpp"
 #include "qcir/qcir.hpp"
 #include "qcir/qcir_io.hpp"
 #include "util/data_structure_manager_common_cmd.hpp"
+#include "util/dvlab_string.hpp"
 #include "util/sysdep.hpp"
 #include "util/tmp_files.hpp"
 
@@ -33,15 +35,57 @@ bool is_non_unitary_gate(std::string_view name) {
     return excluded.contains(name);
 }
 
-std::vector<std::string> unitary_basis_from_device(device::Device const& device) {
+/// Gates that ``from_qasm`` can import back after Qiskit translation.
+bool is_qasm_importable_gate(std::string_view name) {
+    static std::set<std::string, std::less<>> const importable{
+        "id", "h", "x", "y", "z", "s", "sdg", "t", "tdg",
+        "sx", "sxdg", "tx", "txdg", "sy", "sydg", "ty", "tydg",
+        "p", "pz", "px", "py", "rz", "rx", "ry",
+        "cx", "cz", "ccx", "ccz", "swap", "ecr"};
+    return importable.contains(name);
+}
+
+std::vector<std::string> filter_translation_basis(std::vector<std::string> gates) {
     std::vector<std::string> basis;
-    for (auto const& gate : device.get_gate_set()) {
-        if (is_non_unitary_gate(gate)) {
+    basis.reserve(gates.size());
+    for (auto const& gate : gates) {
+        auto const lower = dvlab::str::tolower_string(gate);
+        if (is_non_unitary_gate(lower) || !is_qasm_importable_gate(lower)) {
             continue;
         }
-        basis.push_back(gate);
+        basis.push_back(lower);
     }
     return basis;
+}
+
+std::optional<std::vector<std::string>>
+ibmq_configuration_basis_gates(device::IBMQDevice const& device) {
+    if (!device.jsons.has_value()) {
+        return std::nullopt;
+    }
+    auto const& device_json = device.jsons->device_json;
+    if (!device_json.contains("configuration") ||
+        !device_json["configuration"].contains("basis_gates")) {
+        return std::nullopt;
+    }
+    std::vector<std::string> basis;
+    for (auto const& gate : device_json["configuration"]["basis_gates"]) {
+        basis.push_back(dvlab::str::tolower_string(gate.get<std::string>()));
+    }
+    return basis;
+}
+
+std::vector<std::string> unitary_basis_from_device(device::Device const& device) {
+    std::vector<std::string> candidates;
+    if (auto const* ibmq = dynamic_cast<device::IBMQDevice const*>(&device)) {
+        if (auto config_basis = ibmq_configuration_basis_gates(*ibmq)) {
+            candidates = std::move(*config_basis);
+        }
+    }
+    if (candidates.empty()) {
+        candidates = device.get_gate_set();
+    }
+    return filter_translation_basis(std::move(candidates));
 }
 
 bool write_basis_gates_json(std::filesystem::path const& path, std::vector<std::string> const& basis) {
@@ -154,7 +198,7 @@ dvlab::CmdExecResult translate_qiskit(
         return dvlab::CmdExecResult::error;
     }
 
-    auto translated = from_qasm(tmp_qasm_output);
+    auto translated = from_qasm(tmp_qasm_output, 1e-8);
     if (!translated.has_value()) {
         spdlog::error("Failed to read translated QASM from {}", tmp_qasm_output.string());
         return dvlab::CmdExecResult::error;

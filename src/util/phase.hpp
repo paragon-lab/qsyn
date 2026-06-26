@@ -89,9 +89,9 @@ public:
     template <class T = double>
     requires std::floating_point<T>
     static std::optional<Phase>
-    from_string(std::string const& str) {
+    from_string(std::string const& str, T eps = static_cast<T>(1e-4)) {
         Phase phase;
-        if (!str_to_phase<T>(str, phase)) {
+        if (!str_to_phase<T>(str, phase, eps)) {
             return std::nullopt;
         }
         return phase;
@@ -99,7 +99,7 @@ public:
 
     template <class T = double>
     requires std::floating_point<T>
-    static bool str_to_phase(std::string_view str, Phase& p);
+    static bool str_to_phase(std::string_view str, Phase& p, T eps = static_cast<T>(1e-4));
 
 private:
     dvlab::Rational _rational;
@@ -166,7 +166,7 @@ constexpr bool Phase::operator!=(Phase const& rhs) const {
 
 template <class T>
 requires std::floating_point<T>
-bool Phase::str_to_phase(std::string_view str, Phase& p) {
+bool Phase::str_to_phase(std::string_view str, Phase& p, T eps) {
     std::vector<std::string> number_strings;
     std::vector<char> operators;
 
@@ -225,7 +225,9 @@ bool Phase::str_to_phase(std::string_view str, Phase& p) {
         }
     }
 
-    dvlab::Rational const tmp_rational(temp_float * std::pow(std::numbers::pi_v<T>, n_pis - 1), 1e-4 / std::numbers::pi_v<T>);
+    dvlab::Rational const tmp_rational(
+        temp_float * std::pow(std::numbers::pi_v<T>, n_pis - 1),
+        eps / std::numbers::pi_v<T>);
 
     p = Phase(numerator, denominator) * tmp_rational;
 
