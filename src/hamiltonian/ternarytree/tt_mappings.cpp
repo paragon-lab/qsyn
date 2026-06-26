@@ -6,7 +6,6 @@
 
 #include "tt_mappings.hpp"
 
-#include <memory>
 #include <set>
 #include <unordered_map>
 #include <vector>
@@ -145,7 +144,7 @@ void TTMapper::_load_ferm_ops() {
 namespace {
 
 TernaryQubitNode* as_qubit_node(TernaryNode* node) {
-    return static_cast<TernaryQubitNode*>(node);
+    return dynamic_cast<TernaryQubitNode*>(node);
 }
 
 TernaryQubitNode* qubit_child(TernaryNode* parent, BranchType branch) {
@@ -203,7 +202,7 @@ void debraid_and_append_gates(
     clifford_circuit_adjoint.insert(clifford_circuit_adjoint.end(), ops.begin(), ops.end());
 }
 
-std::vector<size_t> post_order_qubit_indices(TernaryTree const& tree) {
+std::vector<size_t> pre_order_qubit_indices(TernaryTree const& tree) {
     std::vector<size_t> traversal;
     std::vector<TernaryQubitNode*> stack;
     stack.push_back(as_qubit_node(tree.get_root()));
@@ -218,43 +217,13 @@ std::vector<size_t> post_order_qubit_indices(TernaryTree const& tree) {
             }
         }
     }
-    std::ranges::reverse(traversal);
     return traversal;
 }
 
-// Virtual SWAP of qubit labels mode_id_lo and mode_id_hi by rewriting CX gates already
-// recorded for this descendant subtree (e.g. CX(5, 7) -> CX(7, 5), CX(6, 7) -> CX(6, 5)).
-void retroactive_swap_cx_for_pair(
-    size_t mode_id_lo,
-    size_t mode_id_hi,
-    std::set<size_t> const& descendant_indices,
-    std::vector<tableau::CliffordOperator>& clifford_circuit_adjoint) {
-    using CliffordOperatorType = tableau::CliffordOperatorType;
-    for (auto& op : clifford_circuit_adjoint) {
-        if (op.first != CliffordOperatorType::cx) {
-            continue;
-        }
-        auto& ctrl = op.second[0];
-        auto& targ = op.second[1];
-        if (ctrl == mode_id_lo && targ == mode_id_hi) {
-            std::swap(ctrl, targ);
-        } else if (targ == mode_id_hi && descendant_indices.contains(ctrl)) {
-            targ = mode_id_lo;
-        }
-    }
-}
-
-void append_swap_network(
-    std::set<size_t> const& descendant_indices,
-    std::vector<tableau::CliffordOperator>& clifford_circuit_adjoint) {
-    if (descendant_indices.size() < 2) {
-        return;
-    }
-    auto it_lo = descendant_indices.begin();
-    auto it_hi = std::prev(descendant_indices.end());
-    for (size_t i = 0; i < descendant_indices.size() / 2; ++i, ++it_lo, --it_hi) {
-        retroactive_swap_cx_for_pair(*it_lo, *it_hi, descendant_indices, clifford_circuit_adjoint);
-    }
+std::vector<size_t> post_order_qubit_indices(TernaryTree const& tree) {
+    auto traversal = pre_order_qubit_indices(tree);
+    std::ranges::reverse(traversal);
+    return traversal;
 }
 
 void append_cx_from_descendants(
@@ -267,12 +236,118 @@ void append_cx_from_descendants(
     }
 }
 
+/**
+ * @brief Inorder traversal of the qubit indices in the ternary tree.
+   The left (X) branch is visited before the node itself, then the Y and Z branches.
+ * @param tree Ternary tree
+ * @return Vector of qubit indices in inorder traversal
+ */
+std::vector<size_t> inorder_qubit_indices(TernaryTree const& tree) {
+    std::vector<size_t> traversal;
+    // phase 0: left subtree; 1: visit node; 2: right subtree (after mid)
+    std::vector<std::pair<TernaryQubitNode*, uint8_t>> stack;
+    stack.emplace_back(as_qubit_node(tree.get_root()), 0);
+
+    while (!stack.empty()) {
+        auto [node, phase] = stack.back();
+        stack.pop_back();
+
+        if (phase == 0) {
+            stack.emplace_back(node, 1);
+            if (auto* left = qubit_child(node, BranchType::left)) {
+                stack.emplace_back(left, 0);
+            }
+        } else if (phase == 1) {
+            traversal.push_back(node->id);
+            stack.emplace_back(node, 2);
+            if (auto* mid = qubit_child(node, BranchType::mid)) {
+                stack.emplace_back(mid, 0);
+            }
+        } else {
+            if (auto* right = qubit_child(node, BranchType::right)) {
+                stack.emplace_back(right, 0);
+            }
+        }
+    }
+    return traversal;
+}
+
+/**
+ * @brief Inverse mapping of the qubit indices. For example, if the mapping is
+   [4, 1, 0, 2, 3], then the inverse mapping is [2, 1, 3, 4, 0].
+ * @param mapping Mapping of the qubit indices. Should be a permutation of [0, 1, 2, ..., n-1].
+ * @return Inverse mapping of the qubit indices
+ */
+std::vector<size_t> inverse_permutation(std::vector<size_t> const& mapping) {
+    std::vector<size_t> inverse(mapping.size(), 0);
+    for (size_t i = 0; i < mapping.size(); ++i) {
+        inverse[mapping[i]] = i;
+    }
+    return inverse;
+}
+
+std::vector<std::vector<size_t>> get_descendants(TernaryTree const& tree) {
+    std::vector<std::vector<size_t>> descendants(tree.num_qubits());
+
+    for (auto const& idx : post_order_qubit_indices(tree)) {
+        auto* qubit_node  = as_qubit_node(get_node_by_index(tree, idx));
+        auto* left_child  = qubit_child(qubit_node, BranchType::left);
+        auto* mid_child   = qubit_child(qubit_node, BranchType::mid);
+        auto* right_child = qubit_child(qubit_node, BranchType::right);
+
+        descendants[idx].push_back(idx);
+        auto append_child_descendants = [&](TernaryQubitNode* child) {
+            auto const& child_desc = descendants[child->id];
+            descendants[idx].insert(
+                descendants[idx].end(),
+                child_desc.begin(),
+                child_desc.end());
+        };
+        if (left_child) {
+            append_child_descendants(left_child);
+        }
+        if (mid_child) {
+            append_child_descendants(mid_child);
+        }
+        if (right_child) {
+            append_child_descendants(right_child);
+        }
+    }
+
+    return descendants;
+}
+
+/**
+ * @brief Get the depth of the Y branch for each qubit. That is, how many
+ * Y-edges are on the path from the root to a node
+ * @param tree Ternary tree
+ * @return Vector of depths
+ */
+std::vector<size_t> get_y_branch_depths(TernaryTree const& tree) {
+    // indexed by tree node index
+    std::vector<size_t> depths(tree.num_qubits(), 0);
+
+    std::vector<std::pair<TernaryQubitNode*, size_t>> stack;
+    stack.emplace_back(as_qubit_node(tree.get_root()), 0);
+    while (!stack.empty()) {
+        auto [node, y_depth] = stack.back();
+        stack.pop_back();
+        depths[node->id] = y_depth;
+        for (auto const branch : {BranchType::left, BranchType::mid, BranchType::right}) {
+            if (auto* child = qubit_child(node, branch)) {
+                stack.emplace_back(child, y_depth + (branch == BranchType::mid));
+            }
+        }
+    }
+
+    return depths;
+}
 }  // namespace
 
 /**
  * @brief Convert a ternary-tree mapping to a Clifford tableau.
  *        The Clifford tableau represents an operator C such that
- *        \Phi_{T} = C \Phi_{\text{JW}} C^\dagger represents the F2Q mapping
+ *        \Phi_{T} = C \Phi_{\text{JW}} represents the F2Q mapping
  *        associated with the ternary tree.
  * @param mapper Ternary-tree mapper with leg pairing and Pauli strings loaded.
  * @return Stabilizer tableau
@@ -280,64 +355,91 @@ void append_cx_from_descendants(
 tableau::StabilizerTableau to_clifford(TTMapper const& mapper) {
     using CliffordOperator     = tableau::CliffordOperator;
     using CliffordOperatorType = tableau::CliffordOperatorType;
-    // collect gates instead of directly applying them
-    // so taking adjoint at the end is easier.
-    std::vector<CliffordOperator> clifford_circuit_adjoint;
+    using dvlab::iterator::next;
 
-    for (auto const& [mode, leg_pair] : mapper.leg_pairs()) {
-        debraid_and_append_gates(mapper, mode, leg_pair, clifford_circuit_adjoint);
+    auto permutation = inorder_qubit_indices(mapper.tree());
+
+    auto const inorder_indices_inv = inverse_permutation(permutation);
+    auto const braiding_counts     = get_y_branch_depths(mapper.tree());
+    auto const descendants         = get_descendants(mapper.tree());
+
+    auto tableau = tableau::StabilizerTableau(mapper.tree().num_qubits());
+
+    auto reverse_ranges = std::vector<std::pair<size_t, size_t>>();
+
+    for (auto const& idx : pre_order_qubit_indices(mapper.tree())) {
+        auto const qubit_node = as_qubit_node(get_node_by_index(mapper.tree(), idx));
+
+        auto const x_child = as_qubit_node(qubit_node->get_child(BranchType::left));
+        auto const y_child = as_qubit_node(qubit_node->get_child(BranchType::mid));
+
+        // Record the permutation that should happen to the Y-descendants.
+        auto const y_descendant_idx_begin =
+            inorder_indices_inv[idx] + 1;
+        auto const y_descendant_idx_end =
+            y_descendant_idx_begin +
+            (y_child ? descendants[y_child->id].size() : 0);
+        reverse_ranges.emplace_back(y_descendant_idx_begin, y_descendant_idx_end);
+
+        // NOTE: the is_braided flag removes one S gate.
+        // We writes +3 instead of -1 to avoid footguns if we ever decide
+        // to change the type of braiding_counts to a signed integer.
+        auto const n_braidings = (braiding_counts[idx] + (qubit_node->is_braided ? 3 : 0)) % 4;
+
+        switch (n_braidings) {
+            case 0:
+                break;
+            case 1:
+                tableau.s(idx);
+                break;
+            case 2:
+                tableau.z(idx);
+                break;
+            case 3:
+                tableau.sdg(idx);
+                break;
+            default:
+                DVLAB_UNREACHABLE("Invalid number of braidings");
+        }
+
+        if (x_child) {
+            for (auto const x_descendant : descendants[x_child->id]) {
+                tableau.cx(x_descendant, idx);
+            }
+        }
+
+        if (y_child) {
+            for (auto const y_descendant : descendants[y_child->id]) {
+                tableau.cx(y_descendant, idx);
+            }
+        }
     }
 
-    // calculate the adjoint circuit for the PPTT mapping
-    // Here we adapt Algorithm 1 in the paper
-    // [[2505.06212] From Fermions to Qubits: A ZX-Calculus Perspective](https://arxiv.org/abs/2505.06212)
-    // we follow the recursive ZXW diagrams in the paper implicitly.
+    // Each pre-order node records an inorder-index range whose Y-descendant
+    // block must be reversed. Apply those reversals now, in reverse pre-order,
+    // so inner (deeper) ranges are handled before outer ones.
+    //
+    // The ranges nest along Y-edges, and the reversals do not commute.
+    // For example, consider a Y-chain 0 → 1 → 2 → 3. The edge 0 → 1 reverses
+    // inorder positions between nodes 1 and 3, while the edge 1 → 2 reverses
+    // inorder positions between nodes 2 and 3. Composed, the result is
+    // [0, 2, 3, 1]. Reversing the ranges inner-to-outer reproduces that
+    // composition without needing to update inorder_indices_inv during the
+    // tree-gate loop above.
+    for (auto const& [begin, end] : reverse_ranges | std::views::reverse) {
+        std::reverse(next(permutation.begin(), begin), next(permutation.begin(), end));
+    }
 
-    // descendants of each qubit, including itself
-    std::vector<std::set<size_t>> descendants(
-        mapper.tree().num_qubits(), std::set<size_t>{});
-
-    for (auto const& idx : post_order_qubit_indices(mapper.tree())) {
-        auto* qubit_node  = as_qubit_node(get_node_by_index(mapper.tree(), idx));
-        auto* left_child  = qubit_child(qubit_node, BranchType::left);
-        auto* mid_child   = qubit_child(qubit_node, BranchType::mid);
-        auto* right_child = qubit_child(qubit_node, BranchType::right);
-
-        if (mid_child) {
-            append_swap_network(descendants[mid_child->id], clifford_circuit_adjoint);
-        }
-
-        if (left_child) {
-            append_cx_from_descendants(
-                descendants[left_child->id],
-                idx,
-                clifford_circuit_adjoint);
-        }
-
-        if (mid_child) {
-            append_cx_from_descendants(
-                descendants[mid_child->id],
-                idx,
-                clifford_circuit_adjoint);
-        }
-
-        // collects the descendants of the children and add itself
-        descendants[idx].emplace(idx);
-        if (left_child) {
-            descendants[idx].merge(descendants[left_child->id]);
-        }
-        if (mid_child) {
-            descendants[idx].merge(descendants[mid_child->id]);
-        }
-        if (right_child) {
-            descendants[idx].merge(descendants[right_child->id]);
+    // prepend permutation CZ gates to the tree gates
+    for (size_t i = 0; i < permutation.size(); ++i) {
+        for (size_t j = i + 1; j < permutation.size(); ++j) {
+            if (permutation[i] > permutation[j]) {
+                tableau.prepend_cz(permutation[i], permutation[j]);
+            }
         }
     }
 
-    // consolidate the clifford gates into a StabilizerTableau
-    auto clifford = tableau::StabilizerTableau(mapper.tree().num_qubits());
-    clifford.apply(tableau::adjoint(clifford_circuit_adjoint));
-    return clifford;
+    return tableau;
 }
 
 }  // namespace qsyn::hamiltonian

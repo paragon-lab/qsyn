@@ -7,6 +7,7 @@
 #include "ternary_tree.hpp"
 
 #include <fmt/core.h>
+#include <fmt/ranges.h>
 
 #include <algorithm>
 #include <cassert>
@@ -270,6 +271,14 @@ void TernaryTree::swap_legs(TernaryLeg* leg1, TernaryLeg* leg2) {
 
 namespace {
 
+void append_qubit_node_label(TernaryQubitNode const& qubit_node, std::string& out) {
+    if (qubit_node.qubit_label.has_value()) {
+        out += fmt::format("{} (q{})\n", qubit_node.id, qubit_node.qubit_label.value());
+    } else {
+        out += fmt::format("{} (unassigned)\n", qubit_node.id);
+    }
+}
+
 void append_node_hierarchy(TernaryNode* node, std::string const& prefix,
                            bool is_last, std::string& out) {
     auto const branch_char = is_last ? "└── " : "├── ";
@@ -281,11 +290,7 @@ void append_node_hierarchy(TernaryNode* node, std::string const& prefix,
     }
     auto const qubit_node = dynamic_cast<TernaryQubitNode*>(node);
     assert(qubit_node);
-    if (qubit_node->qubit_label.has_value()) {
-        out += fmt::format("q{}\n", *qubit_node->qubit_label);
-    } else {
-        out += "(unassigned)\n";
-    }
+    append_qubit_node_label(*qubit_node, out);
 
     std::array<TernaryNode*, 3> children = {nullptr, nullptr, nullptr};
     size_t n                             = 0;
@@ -305,6 +310,22 @@ void append_node_hierarchy(TernaryNode* node, std::string const& prefix,
 
 }  // namespace
 
+std::string format_logical_to_physical_mapping(TernaryTree const& tree) {
+    std::vector<std::string> physical;
+    physical.reserve(tree.num_qubits());
+    for (size_t i = 0; i < tree.num_qubits(); ++i) {
+        auto* const node       = tree.get_node_by_index(i);
+        auto* const qubit_node = dynamic_cast<TernaryQubitNode*>(node);
+        assert(qubit_node != nullptr);
+        if (qubit_node->qubit_label.has_value()) {
+            physical.push_back(fmt::format("{}", qubit_node->qubit_label.value()));
+        } else {
+            physical.push_back("?");
+        }
+    }
+    return fmt::format("Logical → physical: [{}]\n", fmt::join(physical, ", "));
+}
+
 std::string to_string(TernaryTree const& tree) {
     std::string out;
     TernaryNode* root = tree.get_root();
@@ -313,11 +334,7 @@ std::string to_string(TernaryTree const& tree) {
     }
     auto const root_qubit_node = dynamic_cast<TernaryQubitNode*>(root);
     assert(root_qubit_node);
-    if (root_qubit_node->qubit_label.has_value()) {
-        out += fmt::format("q{}\n", root_qubit_node->qubit_label.value());
-    } else {
-        out += "(unassigned)\n";
-    }
+    append_qubit_node_label(*root_qubit_node, out);
     std::array<TernaryNode*, 3> children = {nullptr, nullptr, nullptr};
     size_t n                             = 0;
     for (auto branch : {BranchType::left, BranchType::mid, BranchType::right}) {

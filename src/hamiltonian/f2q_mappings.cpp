@@ -40,8 +40,8 @@ multiply_terms(std::vector<ComplexPauliTerm> const& lhs,
 std::vector<ComplexPauliTerm>
 JordanWignerMapping::map(std::size_t p, bool is_creation) const {
     // Make terms
-    // a_p  = Z_0 ... Z_{p-1} (X_p - iY_p)
-    // a_p^ = Z_0 ... Z_{p-1} (X_p + iY_p)
+    // a_p  = 0.5 Z_0 ... Z_{p-1} (X_p - iY_p)
+    // a_p^ = 0.5 Z_0 ... Z_{p-1} (X_p + iY_p)
     std::vector<Pauli> z_string(this->n_modes(), Pauli::i);
     for (size_t i = 0; i < p; i++) {
         z_string[i] = Pauli::z;

@@ -2,10 +2,10 @@
   to_clifford tests on the branching example ternary tree.
 */
 
-#include "hamiltonian/tt_mappings/fixtures.hpp"
-
 #include <catch2/catch_message.hpp>
 #include <catch2/catch_test_macros.hpp>
+
+#include "hamiltonian/tt_mappings/fixtures.hpp"
 
 using namespace qsyn::hamiltonian;
 using namespace qsyn::hamiltonian::tt_mappings_test;
@@ -46,8 +46,8 @@ TEST_CASE("Branching example: unbraided reference Clifford", "[tt_mappings][bran
     auto const expected = expected_branching_example_clifford();
 
     REQUIRE(clifford.n_qubits() == 9);
-    CAPTURE(format_synthesized_cx_circuit(expected));
-    CAPTURE(format_synthesized_cx_circuit(clifford));
+    CAPTURE(format_synthesized_clifford_circuit(expected));
+    CAPTURE(format_synthesized_clifford_circuit(clifford));
     REQUIRE(clifford == expected);
 }
 
@@ -67,6 +67,8 @@ TEST_CASE("Branching example: braided modes 4 and 7", "[tt_mappings][branching]"
     auto const expected = expected_branching_braided_4_7_clifford();
 
     REQUIRE(clifford.n_qubits() == 9);
+    CAPTURE(format_synthesized_clifford_circuit(expected));
+    CAPTURE(format_synthesized_clifford_circuit(clifford));
     REQUIRE(clifford == expected);
     REQUIRE(clifford != expected_branching_example_clifford());
 }

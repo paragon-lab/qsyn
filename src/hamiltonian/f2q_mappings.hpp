@@ -34,7 +34,7 @@ public:
 
     virtual std::unique_ptr<FermionToQubitMapping> clone() const = 0;
 
-    /// Clifford ``C`` with ``Phi_mapping = C Phi_JW C†`` (identity for Jordan–Wigner).
+    /// Clifford ``C`` with ``Phi_mapping = C Phi_JW`` (identity for Jordan–Wigner).
     virtual tableau::StabilizerTableau to_clifford() const = 0;
 
     std::size_t n_modes() const { return _n_modes; }
@@ -64,7 +64,7 @@ public:
         : FermionToQubitMapping(tree.num_qubits()), _mapper(std::move(tree)) {}
     TernaryTreeMapping(TernaryTreeMapping const& other)
         : FermionToQubitMapping(other), _mapper(other._mapper.tree()) {}
-    TernaryTreeMapping(TernaryTreeMapping&&) noexcept            = default;
+    TernaryTreeMapping(TernaryTreeMapping&&) noexcept = default;
     TernaryTreeMapping& operator=(TernaryTreeMapping const& other) {
         if (this != &other) {
             FermionToQubitMapping::operator=(other);

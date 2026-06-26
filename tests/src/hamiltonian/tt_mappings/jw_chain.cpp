@@ -2,10 +2,10 @@
   to_clifford tests on JW (right-chain) ternary trees.
 */
 
-#include "hamiltonian/tt_mappings/fixtures.hpp"
-
 #include <catch2/catch_test_macros.hpp>
 #include <vector>
+
+#include "hamiltonian/tt_mappings/fixtures.hpp"
 
 using namespace qsyn::hamiltonian;
 using namespace qsyn::hamiltonian::tt_mappings_test;
@@ -53,6 +53,8 @@ TEST_CASE("JW chain: single braided node", "[tt_mappings][jw]") {
     auto const expected = expected_debraid_clifford(num_qubits, {braided});
 
     REQUIRE(clifford.n_qubits() == num_qubits);
+    CAPTURE(format_synthesized_clifford_circuit(clifford));
+    CAPTURE(format_synthesized_clifford_circuit(expected));
     REQUIRE(clifford == expected);
 }
 

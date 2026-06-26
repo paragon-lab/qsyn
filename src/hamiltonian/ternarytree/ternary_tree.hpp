@@ -129,4 +129,7 @@ private:
 
 std::string to_string(TernaryTree const& tree);
 
+/// ``Logical → physical: [p0, p1, ...]`` with ``physical[i]`` from ``get_node_by_index(i)``.
+std::string format_logical_to_physical_mapping(TernaryTree const& tree);
+
 }  // namespace qsyn::hamiltonian

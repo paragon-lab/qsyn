@@ -2,10 +2,10 @@
   to_clifford tests on parity (left-chain) ternary trees.
 */
 
-#include "hamiltonian/tt_mappings/fixtures.hpp"
-
 #include <catch2/catch_test_macros.hpp>
 #include <vector>
+
+#include "hamiltonian/tt_mappings/fixtures.hpp"
 
 using namespace qsyn::hamiltonian;
 using namespace qsyn::hamiltonian::tt_mappings_test;
