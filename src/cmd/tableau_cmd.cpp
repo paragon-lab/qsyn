@@ -16,6 +16,7 @@
 #include "cmd/tableau_mgr.hpp"
 #include "tableau/pauli_rotation.hpp"
 #include "tableau/stabilizer_tableau.hpp"
+#include "tableau/tableau.hpp"
 #include "tableau/tableau_optimization.hpp"
 #include "tensor/qtensor.hpp"
 #include "util/data_structure_manager_common_cmd.hpp"
@@ -34,6 +35,36 @@ ArgType<size_t>::ConstraintType valid_tableau_qubit_id(TableauMgr const& tableau
         return false;
     };
 }
+
+namespace {
+
+bool is_valid_pauli_string(std::string_view pauli_str) {
+    return !pauli_str.empty() &&
+           std::ranges::all_of(pauli_str, [](char c) {
+               switch (dvlab::str::toupper(c)) {
+                   case 'I':
+                   case 'X':
+                   case 'Y':
+                   case 'Z':
+                       return true;
+                   default:
+                       return false;
+               }
+           });
+}
+
+void append_pauli_rotation(Tableau& tableau, PauliRotation rotation) {
+    dvlab::match(
+        tableau.back(),
+        [&](StabilizerTableau& /* subtableau */) {
+            tableau.push_back(std::vector{std::move(rotation)});
+        },
+        [&](std::vector<PauliRotation>& subtableau) {
+            subtableau.push_back(std::move(rotation));
+        });
+}
+
+}  // namespace
 
 dvlab::Command tableau_new_cmd(TableauMgr& tableau_mgr) {
     return dvlab::Command{
@@ -76,13 +107,26 @@ dvlab::Command tableau_append_cmd(TableauMgr& tableau_mgr) {
     return dvlab::Command{
         "append",
         [&](ArgumentParser& parser) {
-            parser.description("Append a gate to a tableau");
+            parser.description("Append a Clifford gate or Pauli rotation to a tableau");
+
+            auto modes = parser.add_subparsers("mode").required(false);
+
+            auto rotation_parser = modes.add_parser("rotation")
+                                       .description("Append a Pauli rotation");
+
+            rotation_parser.add_argument<std::string>("pauli-string")
+                .help("Pauli string of length n over {I, X, Y, Z}, where n is the number of qubits");
+
+            rotation_parser.add_argument<dvlab::Phase>("phase")
+                .help("Rotation phase");
 
             parser.add_argument<std::string>("gate-type")
+                .required(false)
                 .help("The gate type to be applied");
 
             parser.add_argument<size_t>("qubits")
                 .nargs(1, 2)
+                .required(false)
                 .constraint(valid_tableau_qubit_id(tableau_mgr))
                 .help("The qubits to apply the gate to");
         },
@@ -91,8 +135,39 @@ dvlab::Command tableau_append_cmd(TableauMgr& tableau_mgr) {
                 return dvlab::CmdExecResult::error;
             }
 
+            if (auto const mode = parser.get_dest("mode");
+                mode && dvlab::str::is_prefix_of(*mode, "rotation")) {
+                auto const pauli_str = parser.get<std::string>("pauli-string");
+                auto const n_qubits  = tableau_mgr.get()->n_qubits();
+
+                if (pauli_str.size() != n_qubits) {
+                    spdlog::error(
+                        "Pauli string length {} does not match the number of qubits {}!!",
+                        pauli_str.size(),
+                        n_qubits);
+                    return dvlab::CmdExecResult::error;
+                }
+
+                if (!is_valid_pauli_string(pauli_str)) {
+                    spdlog::error("Invalid Pauli string {}!! Only I, X, Y, and Z are allowed.", pauli_str);
+                    return dvlab::CmdExecResult::error;
+                }
+
+                append_pauli_rotation(
+                    *tableau_mgr.get(),
+                    PauliRotation{pauli_str, parser.get<dvlab::Phase>("phase")});
+
+                return dvlab::CmdExecResult::done;
+            }
+
             auto const type   = to_clifford_operator_type(parser.get<std::string>("gate-type"));
             auto const qubits = parser.get<std::vector<size_t>>("qubits");
+
+            if (!parser.parsed("gate-type")) {
+                spdlog::error(
+                    "Missing gate type!! Use `tableau append rotation <pauli-string> <phase>` to append a Pauli rotation.");
+                return dvlab::CmdExecResult::error;
+            }
 
             if (!type) {
                 spdlog::error("Unknown gate type {}!!", parser.get<std::string>("gate-type"));
