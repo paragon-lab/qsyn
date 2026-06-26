@@ -15,15 +15,17 @@
 #include <unordered_set>
 #include <vector>
 
-#include "device/device_analysis.hpp"
 #include "./bonsai.hpp"
-#include "hamiltonian/f2q_mappings.hpp"
 #include "./ternary_tree.hpp"
 #include "./tree_rotations.hpp"
+#include "device/device_analysis.hpp"
+#include "hamiltonian/f2q_mappings.hpp"
+#include "hamiltonian/trotterize.hpp"
 #include "qcir/basic_gate_type.hpp"
+#include "tableau/pauli_rotation.hpp"
+#include "tree_optimizations.hpp"
 #include "util/graph/minimum_spanning_arborescence.hpp"
 #include "util/simulated_annealing.hpp"
-#include "tree_optimizations.hpp"
 
 namespace qsyn::hamiltonian {
 
@@ -108,12 +110,11 @@ std::pair<size_t, size_t> find_shortest_terminals_between_two_connected_componen
 }
 
 TermSynthesisInfo form_connected_components(
-    HermitianPauliTerm const& term,
+    tableau::PauliProduct const& pauli_product,
     TernaryTree const& tree,
     device::APSPResult const& apsp,
     device::Device const& device) {
     //
-    auto const& pauli_product = term.pauli_product();
     std::vector<size_t> physical_qubits;
 
     for (size_t i = 0; i < pauli_product.n_qubits(); i++) {
@@ -129,7 +130,7 @@ TermSynthesisInfo form_connected_components(
             return dvlab::contains(physical_qubits, qubit);
         });
 
-    spdlog::debug("Connected components for term {}:", term.to_string());
+    spdlog::debug("Connected components for term {}:", pauli_product.to_string());
     for (auto const& component : connected_components) {
         spdlog::debug("- Component: [{}]", fmt::join(component, ", "));
     }
@@ -264,7 +265,7 @@ struct LogicalQubitLayout {
         physical_qubits.resize(n);
         for (size_t i = 0; i < n; ++i) {
             auto const physical = as_qubit_node_or_throw(tree.get_node_by_index(i))->qubit_label.value();
-            physical_qubits[i] = physical;
+            physical_qubits[i]  = physical;
             physical_to_logical.emplace(physical, i);
         }
     }
@@ -293,7 +294,7 @@ void collect_ancillas_for_hamiltonian(
         if (term.pauli_product().is_identity()) {
             continue;
         }
-        auto const synthesis_info = form_connected_components(term, tree, apsp, device);
+        auto const synthesis_info = form_connected_components(term.pauli_product(), tree, apsp, device);
         for (size_t i = 0; i < synthesis_info.qubits.size(); ++i) {
             if (synthesis_info.is_ancilla[i]) {
                 layout.register_ancilla(synthesis_info.qubits[i]);
@@ -303,28 +304,19 @@ void collect_ancillas_for_hamiltonian(
 }
 
 void synthesize_term(
-    HermitianPauliTerm const& term,
+    tableau::PauliRotation const& rotation,
     TernaryTree const& tree,
     device::APSPResult const& apsp,
     device::Device const& device,
-    double dt,
     qcir::QCir& qcir,
     LogicalQubitLayout const* layout) {
-    auto const& pauli_product = term.pauli_product();
-    std::vector<size_t> physical_qubits;
-    for (size_t i = 0; i < pauli_product.n_qubits(); i++) {
-        if (pauli_product.is_i(i)) {
-            continue;
-        }
-        auto const tree_node = as_qubit_node_or_throw(tree.get_node_by_index(i));
-        physical_qubits.push_back(tree_node->qubit_label.value());
-    }
+    auto const& pauli_product = rotation.pauli_product();
 
     if (pauli_product.is_identity()) {
         return;
     }
 
-    auto const synthesis_info = form_connected_components(term, tree, apsp, device);
+    auto const synthesis_info = form_connected_components(pauli_product, tree, apsp, device);
 
     auto const device_subgraph = form_device_subgraph(synthesis_info, device, apsp);
 
@@ -349,7 +341,7 @@ void synthesize_term(
     auto const [mst, root] =
         dvlab::minimum_spanning_arborescence_with_cost(device_subgraph, mst_cost_fn);
 
-    spdlog::debug("MST for term {}:\n{}", term.to_string(), mst_to_string(mst, root, &ancilla_qubits));
+    spdlog::debug("MST for term {}:\n{}", rotation.to_string(), mst_to_string(mst, root, &ancilla_qubits));
 
     std::vector<size_t> post_order_traversal;
     std::stack<size_t> stack;
@@ -374,16 +366,16 @@ void synthesize_term(
     qcir::QCir conjugation_qcir(num_qubits);
 
     // conjugate by V and H gates to put all Pauli letters to Z
-    for (size_t i = 0; i < term.pauli_product().n_qubits(); ++i) {
-        if (term.pauli_product().is_i(i)) {
+    for (size_t i = 0; i < pauli_product.n_qubits(); ++i) {
+        if (pauli_product.is_i(i)) {
             continue;
         }
 
         auto const qubit_line = layout ? i : as_qubit_node_or_throw(tree.get_node_by_index(i))->qubit_label.value();
-        if (term.pauli_product().is_x(i)) {
+        if (pauli_product.is_x(i)) {
             conjugation_qcir.append(qcir::HGate(), {qubit_line});
         }
-        if (term.pauli_product().is_y(i)) {
+        if (pauli_product.is_y(i)) {
             conjugation_qcir.append(qcir::SXGate(), {qubit_line});
         }
     }
@@ -394,17 +386,17 @@ void synthesize_term(
             continue;
         }
         auto const src = *mst.in_neighbors(dst).begin();
-        conjugation_qcir.append(qcir::CXGate(), {to_line(dst), to_line(src)});
-        if (ancilla_qubits.contains(dst)) {
+        // The supplementary mat'l of Treespilation is incorrect here.
+        // It states to add this gate after the main CX gate but it should be
+        // before.
+        if (ancilla_qubits.contains(src)) {
             conjugation_qcir.append(qcir::CXGate(), {to_line(src), to_line(dst)});
         }
+        conjugation_qcir.append(qcir::CXGate(), {to_line(dst), to_line(src)});
     }
     qcir.compose(conjugation_qcir);
 
-    // synthesize a phase gate at the root.
-    // for now, assumes there's only one trotterization step
-
-    qcir.append(qcir::PZGate(-term.coeff() * dt), {to_line(root)});
+    qcir.append(qcir::PZGate(rotation.phase()), {to_line(root)});
     conjugation_qcir.adjoint_inplace();
     qcir.compose(conjugation_qcir);
 }
@@ -462,11 +454,6 @@ treespile(
 
     auto const qubit_hamiltonian = qubitize(hamiltonian, mapping);
 
-    // if all terms are commutative, fix trotter steps to 1
-    if (is_all_commutative(qubit_hamiltonian)) {
-        n_trotterization_steps = 1;
-    }
-
     std::optional<LogicalQubitLayout> layout;
     if (use_logical_indices) {
         layout.emplace(tree.value());
@@ -475,11 +462,17 @@ treespile(
 
     qcir::QCir qcir(use_logical_indices ? layout->num_qubits() : device.get_num_qubits());
 
-    auto const dt = time / static_cast<double>(n_trotterization_steps);
+    // if all terms are commutative, fix trotter steps to 1
+    if (is_all_commutative(qubit_hamiltonian)) {
+        n_trotterization_steps = 1;
+    }
+    auto const dt                        = time / static_cast<double>(n_trotterization_steps);
     LogicalQubitLayout const* layout_ptr = layout ? &*layout : nullptr;
 
-    for (auto const& term : qubit_hamiltonian) {
-        synthesize_term(term, tree.value(), apsp, device, dt, qcir, layout_ptr);
+    auto const prtabl = trotterize_single_step(qubit_hamiltonian, dt);
+
+    for (auto const& rotation : prtabl) {
+        synthesize_term(rotation, tree.value(), apsp, device, qcir, layout_ptr);
     }
 
     if (n_trotterization_steps > 1) {

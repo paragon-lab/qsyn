@@ -11,6 +11,9 @@
 
 namespace qsyn::hamiltonian {
 
+qsyn::tableau::PauliRotationTableau trotterize_single_step(
+    QubitHamiltonian const& hamiltonian, double dt) noexcept;
+
 qsyn::tableau::PauliRotationTableau trotterize(
     QubitHamiltonian const& hamiltonian, double time, size_t n_steps) noexcept;
 

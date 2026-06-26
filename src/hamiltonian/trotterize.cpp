@@ -15,7 +15,7 @@ namespace {
 /**
  * trotterize a single step of a Hamiltonian composed of only commutative terms.
  * Basically, for each term $H_i$ in a Hamiltonian $H$, this function appends
- * Pauli rotations $U_i = \exp(-i H_i \Delta t / 2)$ to the given tableau.
+ * Pauli rotations $U_i = \exp(-i H_i \Delta t)$ to the given tableau.
  *
  * @param tableau The tableau to append the Trotterization to.
  * @param hamiltonian The Hamiltonian to trotterize.
@@ -26,7 +26,6 @@ void append_trotterize_step(
     QubitHamiltonian const& hamilt,
     double dt) noexcept {
     using qsyn::tableau::PauliRotation;
-    // TODO: Implement the Trotterization for a single step.
 
     for (auto const& term : hamilt) {
         if (term.coeff() == 0.0) {
@@ -35,14 +34,32 @@ void append_trotterize_step(
         if (term.pauli_product().is_identity()) {
             continue;
         }
-        prtabl.push_back(
-            PauliRotation(term.pauli_product(),
-                          dvlab::Phase(-term.coeff() * dt)));
+        // PZGate implements exp(-i θ/2 Z) on the rotation qubit,
+        // so evolution exp(-i c Δt Z) needs θ = 2|c|Δt
+        // (c.f. Qiskit's PauliEvolutionGate).
+        auto const phase = dvlab::Phase::to_phase(2 * term.coeff() * dt, 1e-8);
+        prtabl.push_back(PauliRotation(term.pauli_product(), phase));
     }
 }
 
 }  // namespace
 
+qsyn::tableau::PauliRotationTableau trotterize_single_step(
+    QubitHamiltonian const& hamiltonian, double dt) noexcept {
+    using qsyn::tableau::PauliRotationTableau;
+
+    auto prtabl = PauliRotationTableau{};
+
+    if (hamiltonian.n_terms() == 0 || dt == 0) {
+        return prtabl;
+    }
+
+    prtabl.reserve(hamiltonian.n_terms());
+
+    append_trotterize_step(prtabl, hamiltonian, dt);
+
+    return prtabl;
+}
 /**
  * Trotterize a Hamiltonian for a given time and number of steps.
  * If the Hamiltonian is commutative, the resulting PauliRotationTableau is
@@ -60,30 +77,29 @@ qsyn::tableau::PauliRotationTableau trotterize(
     using dvlab::iterator::next;
     using qsyn::tableau::PauliRotationTableau;
 
-    auto prtabl = PauliRotationTableau{};
-    if (hamiltonian.n_terms() == 0 || time == 0.0 || n_steps == 0) {
-        return prtabl;
+    if (n_steps == 0) {
+        return PauliRotationTableau{};
     }
 
-    auto all_commutative = is_all_commutative(hamiltonian);
-    auto n_terms         = hamiltonian.n_terms();
+    auto const all_commutative = is_all_commutative(hamiltonian);
 
     if (all_commutative) {
-        prtabl.reserve(n_terms);
-    } else {
-        prtabl.reserve(n_terms * n_steps);
+        n_steps = 1;
     }
 
-    auto dt = all_commutative ? time : (time / static_cast<double>(n_steps));
+    auto const dt = time / static_cast<double>(n_steps);
 
-    append_trotterize_step(prtabl, hamiltonian, dt);
+    auto prtabl = trotterize_single_step(hamiltonian, dt);
 
-    // if the Hamiltonian is not commutative, repeat (n_steps - 1) time more
-    // since all steps are the same, we can just copy the existing terms
     if (!all_commutative) {
+        auto const n_rotations_per_step = prtabl.size();
+        prtabl.reserve(n_rotations_per_step * n_steps);
+
+        // if the Hamiltonian is not commutative, repeat (n_steps - 1) time more
+        // since all steps are the same, we can just copy the existing terms
         for (size_t i = 1; i < n_steps; ++i) {
             prtabl.insert(prtabl.end(),
-                          prtabl.begin(), next(prtabl.begin(), n_terms));
+                          prtabl.begin(), next(prtabl.begin(), n_rotations_per_step));
         }
     }
 
