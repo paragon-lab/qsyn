@@ -68,6 +68,8 @@ auto python_package_exists(std::string_view package_name) -> bool;
 auto pdflatex_exists() -> bool;
 
 auto get_qsyn_executable_dir() -> std::filesystem::path;
+/// Directory containing ``pyproject.toml`` for ``uv run`` (repo root when built in ``build/``).
+auto get_qsyn_project_dir() -> std::filesystem::path;
 auto get_qsyn_config_dir() -> std::optional<std::filesystem::path>;
 
 [[nodiscard]]

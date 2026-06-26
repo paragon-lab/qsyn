@@ -55,7 +55,7 @@ int wait_for_child(pid_t pid) {
 void terminate_child_process_group(pid_t pid) {
     kill(-pid, SIGINT);
     for (int attempt = 0; attempt < 50; ++attempt) {
-        int status = 0;
+        int status        = 0;
         auto const waited = waitpid(pid, &status, WNOHANG);
         if (waited == pid) {
             return;
@@ -118,6 +118,25 @@ std::optional<std::filesystem::path> get_qsyn_config_dir() {
         return std::nullopt;
     }
     return home_dir.value() + "/.config/qsyn/";
+}
+
+std::filesystem::path get_qsyn_project_dir() {
+    if (char const* override_dir = std::getenv("QSYN_PROJECT")) {
+        auto const path = std::filesystem::path(override_dir);
+        if (std::filesystem::is_directory(path)) {
+            return path;
+        }
+    }
+
+    auto dir = get_qsyn_executable_dir();
+    while (!dir.empty() && dir != dir.root_path()) {
+        if (std::filesystem::exists(dir / "pyproject.toml")) {
+            return dir;
+        }
+        dir = dir.parent_path();
+    }
+
+    return get_qsyn_executable_dir();
 }
 
 bool is_uv_available() {
@@ -185,9 +204,9 @@ int uv_run_script(std::string_view script_path, std::vector<std::string> args) {
         return 1;
     }
 
-    auto const executable_dir = get_qsyn_executable_dir();
+    auto const project_dir = get_qsyn_project_dir();
 
-    if (!std::filesystem::exists(executable_dir / ".venv")) {
+    if (!std::filesystem::exists(project_dir / ".venv")) {
         spdlog::warn("No uv venv found. A new one will be created...");
         // NOTE: `uv run` will try to create a venv if it doesn't exist.
         // We don't need to create it manually. The warning is just to
@@ -196,7 +215,7 @@ int uv_run_script(std::string_view script_path, std::vector<std::string> args) {
 
     auto const cmd = fmt::format(
         "uv run --project {} {} {}",
-        executable_dir.string(),
+        project_dir.string(),
         script_path,
         fmt::join(args, " "));
     return run_shell_command_interruptible(cmd);
