@@ -1,0 +1,23 @@
+//!ARGS FHAM OUT T N DEVICE
+// Treespile encoding experiment: JW ground truth + TT treespile circuit + Clifford C.
+// Invoked by scripts/treespile/run_experiment.py
+
+device fetch -f ${DEVICE}
+fham read ${FHAM}
+fham qubitize -s jw
+qbham write ${OUT}/H_jw.txt
+
+fham read ${FHAM}
+device fetch -f ${DEVICE}
+fham qubitize -s ternary_tree
+qbham write ${OUT}/H_T.txt
+fham treespile ${T} ${N} --logical-index
+qcir write ${OUT}/QC_T_untranspiled.qasm
+qcir translate --qiskit
+qcir write ${OUT}/QC_T.qasm
+
+convert fham tableau --encoding
+convert tableau qcir
+qcir write ${OUT}/C.qasm
+
+device write --ibmq ${OUT}/device.json
