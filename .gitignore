@@ -8,6 +8,7 @@ qsyn*
 
 # for work-in-progress things
 wip/
+experiments
 
 # vscode configuration files and folders
 .vscode
