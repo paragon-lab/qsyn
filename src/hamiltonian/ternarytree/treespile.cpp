@@ -14,6 +14,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <fstream>
+#include <random>
 
 #include "./bonsai.hpp"
 #include "./ternary_tree.hpp"
@@ -447,7 +449,7 @@ treespile(
     if (optimize1) {
         tree = pauli_weight_optimize_mapping(*tree, hamiltonian, &device);
     } else if (optimize2) {
-        tree = cnot_proxy_optimize_mapping(*tree, hamiltonian, &device);
+        tree = infidelity_proxy_optimize_mapping(*tree, hamiltonian, &device);
     }
 
     auto const mapping = TernaryTreeMapping(tree.value());

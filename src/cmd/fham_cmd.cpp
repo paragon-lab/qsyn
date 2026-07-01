@@ -24,6 +24,7 @@
 #include "hamiltonian/ternarytree/ternary_tree.hpp"
 #include "hamiltonian/ternarytree/tree_optimizations.hpp"
 #include "hamiltonian/ternarytree/treespile.hpp"
+#include "hamiltonian/ternarytree/proxy_eval.hpp"
 #include "qcir/qcir.hpp"
 #include "util/data_structure_manager_common_cmd.hpp"
 
@@ -49,11 +50,11 @@ TernaryTree optimize_ternary_tree_mapping(
         dev_ptr = device_mgr.get();
     }
     if (optimize1 && optimize2) {
-        fmt::println("Warning: Both -o1 and -o2 specified. Defaulting to -o2 (CNOT proxy count).");
+        fmt::println("Warning: Both -o1 and -o2 specified. Defaulting to -o2 (fidelity proxy).");
     }
     if (optimize2) {
-        fmt::println("Optimizing ternary tree mapping to minimize proxy CNOT count...");
-        return cnot_proxy_optimize_mapping(tree, f_ham, dev_ptr);
+        fmt::println("Optimizing ternary tree mapping to minimize proxy fidelity...");
+        return infidelity_proxy_optimize_mapping(tree, f_ham, dev_ptr);
     }
     if (optimize1) {
         fmt::println("Optimizing ternary tree mapping to minimize Pauli weight...");
@@ -171,7 +172,7 @@ dvlab::Command fham_qubitize_cmd(FermionHamiltonianMgr& fham_mgr, QubitHamiltoni
 
             parser.add_argument<bool>("-o2", "--optimize2")
                 .action(store_true)
-                .help("Run simulated annealing to minimize proxy CNOT count (only applies to ternary_tree strategy)");
+                .help("Run simulated annealing to minimize proxy fidelity (only applies to ternary_tree strategy)");
         },
         [&](ArgumentParser const& parser) {
             if (!dvlab::utils::mgr_has_data(fham_mgr)) {
@@ -412,7 +413,7 @@ dvlab::Command fham_treespile_cmd(
                 .help("Run simulated annealing to optimize tree for Pauli weight");
             parser.add_argument<bool>("-o2", "--optimize2")
                 .action(store_true)
-                .help("Run simulated annealing to optimize tree for proxy CNOT count (requires device)");
+                .help("Run simulated annealing to optimize tree for proxy fidelity (requires device)");
             parser.add_argument<bool>("-e", "--exhaustive")
                 .action(store_true)
                 .help("Exhaustively search for the best ternary tree, stemming from all qubits");
@@ -560,6 +561,53 @@ dvlab::Command fham_treespile_cmd(
         });
 }
 
+// NEW
+dvlab::Command fham_eval_cmd(
+    device::DeviceMgr& device_mgr,
+    FermionHamiltonianMgr& fham_mgr) {
+    return dvlab::Command(
+        "eval-proxy",
+        [](ArgumentParser& parser) {
+            parser.description("Evaluate the proxy cost function by generating random tree mappings.");
+            parser.add_argument<std::string>("-d", "--output-dir")
+                .required(true)
+                .help("Directory for proxy evaluation outputs (CSV and sample QASM files)");
+            parser.add_argument<size_t>("-s", "--samples")
+                .default_value(10)
+                .help("Number of random trees to sample");
+            parser.add_argument<std::string>("-o", "--output")
+                .default_value("proxy_evaluation.csv")
+                .help("Output CSV file name within --output-dir");
+        },
+        [&](ArgumentParser const& parser) {
+            if (device_mgr.empty() || !dvlab::utils::mgr_has_data(fham_mgr)) {
+                spdlog::error("Please load a device and a fermionic Hamiltonian first.");
+                return dvlab::CmdExecResult::error;
+            }
+            auto const output_dir = std::filesystem::path(parser.get<std::string>("--output-dir"));
+            // evaluate_proxy_termwise_depth(
+            //     *fham_mgr.get(),
+            //     *device_mgr.get(),
+            //     output_dir / parser.get<std::string>("--output"),
+            //     parser.get<size_t>("--samples")
+            // );
+            // evaluate_proxy_termwise_fidelity(
+            //     *fham_mgr.get(),
+            //     *device_mgr.get(),
+            //     output_dir / parser.get<std::string>("--output"),
+            //     parser.get<size_t>("--samples")
+            // );
+            evaluate_proxy_cost(
+                *fham_hamiltonian(fham_mgr),
+                *device_mgr.get(),
+                output_dir,
+                parser.get<std::string>("--output"),
+                parser.get<size_t>("--samples")
+            );
+            return dvlab::CmdExecResult::done;
+        });
+}
+
 }  // namespace
 
 dvlab::Command fham_cmd(
@@ -578,6 +626,7 @@ dvlab::Command fham_cmd(
     cmd.add_subcommand("fham-cmd-group", fham_bonsai_cmd(device_mgr, fham_mgr));
     cmd.add_subcommand("fham-cmd-group", fham_treespile_cmd(device_mgr, fham_mgr, qcir_mgr));
     cmd.add_subcommand("fham-cmd-group", fham_print_cmd(fham_mgr));
+    cmd.add_subcommand("fham-cmd-group", fham_eval_cmd(device_mgr, fham_mgr));
 
     return cmd;
 }

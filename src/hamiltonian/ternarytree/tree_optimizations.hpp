@@ -1,6 +1,6 @@
 /*
   PackageName  [ hamiltonian ]
-  Synopsis     [ Optimizations for ternary tree represenation ]
+  Synopsis     [ Proxy functions and simulated annealing to optimize ternary tree ]
   Author       [ April Wang (april864) ]
 */
 
@@ -13,9 +13,7 @@
 
 namespace qsyn::hamiltonian {
 
-double pauli_weight_cost(const TernaryTree& tt, const FermionHamiltonian& f_ham);
-
-// Oracle for computing tree distances and tail weights for fast_tree_cost.
+// Oracle for use in infideliy_cost and cnot_cost. Computes tree distances and tail weights.
 class TreeOracle {
 public:
     TreeOracle(const TernaryTree& tree, const dvlab::APSPResult<QubitIdType>& apsp);
@@ -39,15 +37,30 @@ private:
       BranchType initial_branch);
 };
 
-// Approximates CNOT count for qubit interactions in f_ham
-double fast_tree_cost(const FermionHamiltonian& f_ham, const TernaryTree& tree, const dvlab::APSPResult<QubitIdType>& apsp);
+// Best proxy: infidelity_cost. Approximates infidelity by multiplying infidelities of two-qubit
+// gates along the interaction path in the ternary tree.
+// TODO: check use of TreeOracle
+double infidelity_cost(const TernaryTree& tree, const FermionHamiltonian& f_ham, const dvlab::APSPResult<QubitIdType>& apsp);
 
-TernaryTree pauli_weight_optimize_mapping(
+// Approximates CNOT count across interaction paths in ternary tree
+double cnot_cost(const TernaryTree& tree, const FermionHamiltonian& f_ham, const dvlab::APSPResult<QubitIdType>& apsp);
+
+// Counts number of Pauli gates along path in ternary tree.
+double pauli_weight_cost(const TernaryTree& tt, const FermionHamiltonian& f_ham);
+
+// Simulated annealing loops using the above proxy functions
+// TODO: refactor into one SA loop
+TernaryTree infidelity_proxy_optimize_mapping(
+    TernaryTree const& initial_tree,
+    const FermionHamiltonian& f_ham,
+    const qsyn::device::Device* device);
+    
+TernaryTree cnot_proxy_optimize_mapping(
     TernaryTree const& initial_tree,
     const FermionHamiltonian& f_ham,
     const qsyn::device::Device* device = nullptr);
-  
-TernaryTree cnot_proxy_optimize_mapping(
+
+TernaryTree pauli_weight_optimize_mapping(
     TernaryTree const& initial_tree,
     const FermionHamiltonian& f_ham,
     const qsyn::device::Device* device = nullptr);
