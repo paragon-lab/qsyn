@@ -6,6 +6,7 @@
 ****************************************************************************/
 #include <fmt/core.h>
 #include <spdlog/spdlog.h>
+#include <unistd.h>
 
 #include <atomic>
 #include <cstdio>
@@ -13,7 +14,6 @@
 #include <regex>
 #include <string>
 #include <tl/enumerate.hpp>
-#include <unistd.h>
 
 #include "cli/cli.hpp"
 #include "util/cin_cout_cerr.hpp"

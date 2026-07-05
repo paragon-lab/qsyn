@@ -5,18 +5,17 @@
   Copyright    [ Copyright(c) 2026 PARAG@N Lab, CS, Northwestern U, IL, USA ]
 ****************************************************************************/
 
-#include "device/ibmq_devices.hpp"
-
 #include <fmt/core.h>
 #include <fmt/ranges.h>
 #include <spdlog/spdlog.h>
 
 #include <cctype>
 #include <fstream>
+#include <tl/enumerate.hpp>
 #include <unordered_map>
 #include <unordered_set>
 
-#include <tl/enumerate.hpp>
+#include "device/ibmq_devices.hpp"
 
 namespace qsyn::device {
 
@@ -58,8 +57,8 @@ auto slice_ibmq_device_jsons(
     std::unordered_map<QubitIdType, QubitIdType> old_to_new;
 
     auto const parent_n_qubits = full.properties_json.contains("qubits")
-                                    ? full.properties_json["qubits"].size()
-                                    : full.device_json.value("n_qubits", 0);
+                                     ? full.properties_json["qubits"].size()
+                                     : full.device_json.value("n_qubits", 0);
 
     for (auto const [logical, physical] : tl::views::enumerate(physical_qubits)) {
         if (!active.insert(physical).second) {
@@ -121,7 +120,7 @@ auto slice_ibmq_device_jsons(
             if (!active.contains(q0) || !active.contains(q1)) {
                 continue;
             }
-            auto sliced_item     = item;
+            auto sliced_item    = item;
             sliced_item["name"] = fmt::format(
                 "{}_{}{}",
                 name.substr(0, pos),
@@ -193,11 +192,11 @@ IBMQDevice make_ibmq_subdevice(
     Device induced_device,
     SlicedIBMQDeviceExport sliced) {
     IBMQDevice out;
-    static_cast<Device&>(out) = std::move(induced_device);
-    out.backend_version       = parent.backend_version;
-    out.last_update_time      = parent.last_update_time;
-    out.json_source           = parent.json_source;
-    out.jsons                 = std::move(sliced.jsons);
+    static_cast<Device&>(out)  = std::move(induced_device);
+    out.backend_version        = parent.backend_version;
+    out.last_update_time       = parent.last_update_time;
+    out.json_source            = parent.json_source;
+    out.jsons                  = std::move(sliced.jsons);
     out.parent_physical_qubits = std::move(sliced.physical_qubits);
     return out;
 }

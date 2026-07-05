@@ -21,10 +21,10 @@
 #include "hamiltonian/fham_workspace.hpp"
 #include "hamiltonian/qubit_hamiltonian.hpp"
 #include "hamiltonian/ternarytree/bonsai.hpp"
+#include "hamiltonian/ternarytree/proxy_eval.hpp"
 #include "hamiltonian/ternarytree/ternary_tree.hpp"
 #include "hamiltonian/ternarytree/tree_optimizations.hpp"
 #include "hamiltonian/ternarytree/treespile.hpp"
-#include "hamiltonian/ternarytree/proxy_eval.hpp"
 #include "qcir/qcir.hpp"
 #include "util/data_structure_manager_common_cmd.hpp"
 
@@ -602,8 +602,7 @@ dvlab::Command fham_eval_cmd(
                 *device_mgr.get(),
                 output_dir,
                 parser.get<std::string>("--output"),
-                parser.get<size_t>("--samples")
-            );
+                parser.get<size_t>("--samples"));
             return dvlab::CmdExecResult::done;
         });
 }

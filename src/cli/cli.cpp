@@ -31,7 +31,7 @@ namespace detail {
 std::atomic<int> g_command_sigint_count{0};
 std::atomic<std::time_t> g_command_sigint_time{0};
 
-constexpr int sigint_force_quit_strikes = 2;
+constexpr int sigint_force_quit_strikes           = 2;
 constexpr std::time_t sigint_strike_reset_seconds = 2;
 
 void reset_command_sigint_strikes() {

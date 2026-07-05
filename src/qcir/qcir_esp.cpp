@@ -122,9 +122,9 @@ tl::expected<EspResult, EspError> calculate_esp(
 
     std::unordered_set<std::string> unsupported_set;
     for (auto const* gate : qcir.get_gates()) {
-        auto const& op        = gate->get_operation();
-        auto const base_name  = op.get_type();
-        auto const full_repr  = op.get_repr();
+        auto const& op       = gate->get_operation();
+        auto const base_name = op.get_type();
+        auto const full_repr = op.get_repr();
         if (!resolve_device_gate_name(base_name, device).has_value()) {
             unsupported_set.insert(full_repr);
         }

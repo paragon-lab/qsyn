@@ -9,13 +9,13 @@
 #include <fmt/format.h>
 
 #include <algorithm>
+#include <fstream>
 #include <optional>
+#include <random>
 #include <stack>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <fstream>
-#include <random>
 
 #include "./bonsai.hpp"
 #include "./ternary_tree.hpp"

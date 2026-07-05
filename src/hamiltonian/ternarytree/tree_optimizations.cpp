@@ -161,11 +161,11 @@ double infidelity_cost(const TernaryTree& tree, const FermionHamiltonian& f_ham,
                 active_nodes.push_back(i);
             }
         }
-        
+
         // Note: sum because apsp is log fidelities
         total_infidelity += oracle.get_subtree_weight(active_nodes);
     }
-    
+
     return total_infidelity;
 }
 
@@ -184,10 +184,10 @@ double cnot_cost(const TernaryTree& tree, const FermionHamiltonian& f_ham, const
                 active_nodes.push_back(i);
             }
         }
-        
+
         total_cost += oracle.get_subtree_weight(active_nodes);
     }
-    
+
     return total_cost;
 }
 
@@ -219,7 +219,6 @@ TernaryTree infidelity_proxy_optimize_mapping(
     TernaryTree const& initial_tree,
     const FermionHamiltonian& f_ham,
     const qsyn::device::Device* device) {
-    
     using util::SimulatedAnnealing;
 
     if (!device) {
@@ -229,28 +228,28 @@ TernaryTree infidelity_proxy_optimize_mapping(
     // For noise-aware APSP
     auto noise_aware_cost = [](qsyn::device::Device::QubitPair const& edge, qsyn::device::Device const& dev) -> float {
         auto const& edge_gates = dev.get_gate_info(edge);
-        auto const& gate_set = dev.get_gate_set();
-        float error_rate = 1.0f;
-        
+        auto const& gate_set   = dev.get_gate_set();
+        float error_rate       = 1.0f;
+
         for (auto const& info : edge_gates) {
             std::string gate_name = dvlab::str::tolower_string(gate_set[info.gate_idx]);
             if (gate_name == "cx" || gate_name == "cnot" || gate_name == "ecr" || gate_name == "cz") {
-                error_rate = info.error; 
-                break; 
-            }   
+                error_rate = info.error;
+                break;
+            }
         }
-        
+
         if (error_rate >= 1.0f || error_rate < 0.0f) {
             return std::numeric_limits<float>::infinity();
         }
-        return -std::log(1.0f - error_rate); 
+        return -std::log(1.0f - error_rate);
     };
 
     auto const fidelity_apsp = device::floyd_warshall(*device, noise_aware_cost);
 
     std::function<double(TernaryTree const&)> const wrapped_cost_fn =
         [&](TernaryTree const& tree) -> double { return infidelity_cost(tree, f_ham, fidelity_apsp); };
-        
+
     TreeRotator rotator;
 
     using MutateFn = SimulatedAnnealing<TernaryTree, double>::MutateFn;

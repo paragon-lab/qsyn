@@ -22,7 +22,7 @@ ComplexPauliTerm jw_majorana_term(std::size_t n_modes, std::size_t index) {
         throw std::invalid_argument(
             fmt::format("Majorana index {} out of range for {} modes", index, n_modes));
     }
-    std::size_t const mode = index / 2;
+    std::size_t const mode    = index / 2;
     Pauli const pauli_on_mode = (index % 2 == 0) ? Pauli::x : Pauli::y;
     std::vector<Pauli> paulis(n_modes, Pauli::i);
     for (std::size_t q = 0; q < mode; ++q) {
@@ -50,13 +50,13 @@ ComplexPauliTerm conjugate_pauli_term(
 namespace {
 
 void print_pauli_term_line(ComplexPauliTerm const& term) {
-  auto const coeff = term.coeff();
-  auto const pauli = term.pauli_product().to_string('+');
-  if (std::abs(coeff.imag()) < 1e-12) {
-    fmt::println("  {}", fmt::format("{} {}", coeff.real(), pauli));
-  } else {
-    fmt::println("  {}", fmt::format("({}, {}) {}", coeff.real(), coeff.imag(), pauli));
-  }
+    auto const coeff = term.coeff();
+    auto const pauli = term.pauli_product().to_string('+');
+    if (std::abs(coeff.imag()) < 1e-12) {
+        fmt::println("  {}", fmt::format("{} {}", coeff.real(), pauli));
+    } else {
+        fmt::println("  {}", fmt::format("({}, {}) {}", coeff.real(), coeff.imag(), pauli));
+    }
 }
 
 }  // namespace

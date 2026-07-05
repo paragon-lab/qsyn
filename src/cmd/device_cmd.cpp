@@ -335,7 +335,7 @@ dvlab::Command device_fetch_cmd(qsyn::device::DeviceMgr& device_mgr) {
             device_mgr.add(device_mgr.get_next_id(), std::make_unique<IBMQDevice>(std::move(device.value())));
 
             return CmdExecResult::done;
-            }};
+        }};
 }
 
 dvlab::Command device_write_cmd(qsyn::device::DeviceMgr& device_mgr) {

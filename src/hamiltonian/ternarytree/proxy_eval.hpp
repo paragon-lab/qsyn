@@ -12,8 +12,8 @@
 
 #include "device/device.hpp"
 #include "device/device_analysis.hpp"
-#include "hamiltonian/fermionic_hamiltonian.hpp"
 #include "hamiltonian/f2q_mappings.hpp"
+#include "hamiltonian/fermionic_hamiltonian.hpp"
 #include "qcir/qcir.hpp"
 #include "ternary_tree.hpp"
 

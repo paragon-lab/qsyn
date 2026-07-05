@@ -8,11 +8,11 @@
 
 #include <fmt/core.h>
 #include <fmt/ranges.h>
-#include <nlohmann/json.hpp>
 #include <spdlog/spdlog.h>
 
-#include <fstream>
 #include <filesystem>
+#include <fstream>
+#include <nlohmann/json.hpp>
 #include <set>
 #include <string>
 #include <vector>
@@ -119,10 +119,10 @@ dvlab::CmdExecResult translate_qiskit(
     }
 
     dv::TmpDir const tmp_dir;
-    fs::path const tmp_qasm_input      = tmp_dir.path() / "input.qasm";
-    fs::path const tmp_qasm_output     = tmp_dir.path() / "output.qasm";
-    fs::path const tmp_basis_gates     = tmp_dir.path() / "basis_gates.json";
-    bool const use_device_basis        = !backend.has_value() || backend->empty();
+    fs::path const tmp_qasm_input  = tmp_dir.path() / "input.qasm";
+    fs::path const tmp_qasm_output = tmp_dir.path() / "output.qasm";
+    fs::path const tmp_basis_gates = tmp_dir.path() / "basis_gates.json";
+    bool const use_device_basis    = !backend.has_value() || backend->empty();
     std::string procedure_label;
 
     if (!qcir_mgr.get()->write_qasm(tmp_qasm_input)) {
@@ -145,7 +145,7 @@ dvlab::CmdExecResult translate_qiskit(
         }
 
         auto const* device = device_mgr.get();
-        auto const basis     = unitary_basis_from_device(*device);
+        auto const basis   = unitary_basis_from_device(*device);
         if (basis.empty()) {
             spdlog::error(
                 "Focused device '{}' has no unitary gates in its gate set",

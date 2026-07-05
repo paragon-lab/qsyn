@@ -67,7 +67,6 @@ private:
     void _load_ferm_ops();
 };
 
-[[nodiscard]]
-tableau::StabilizerTableau to_clifford(TTMapper const& mapper);
+[[nodiscard]] tableau::StabilizerTableau to_clifford(TTMapper const& mapper);
 
 }  // namespace qsyn::hamiltonian

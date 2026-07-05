@@ -2,4 +2,4 @@
 
 namespace dvlab {
 
-} // namespace dvlab
+}  // namespace dvlab
