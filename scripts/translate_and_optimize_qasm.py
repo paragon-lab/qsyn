@@ -27,7 +27,7 @@ from qiskit.transpiler.passes import (
     Collect2qBlocks,
     CommutativeCancellation,
     ConsolidateBlocks,
-    Optimize1qGates,
+    Optimize1qGatesDecomposition,
     UnitarySynthesis,
 )
 
@@ -111,14 +111,17 @@ def translate_gate_set_basis(circuit: QuantumCircuit, basis_gates: list[str]) ->
 
 def post_mapping_optimize_basis(circuit: QuantumCircuit, basis_gates: list[str]) -> QuantumCircuit:
     """Connectivity-preserving optimizations for a fixed basis gate list."""
-    passes = [
-        Optimize1qGates(),
-        CommutativeCancellation(),
-        Collect2qBlocks(),
-    ]
+    passes = []
+    if basis_gates:
+        passes.append(Optimize1qGatesDecomposition(basis=basis_gates))
+    passes.append(CommutativeCancellation())
+    passes.append(Collect2qBlocks())
     if basis_gates:
         passes.append(ConsolidateBlocks(basis_gates=basis_gates))
         passes.append(UnitarySynthesis(basis_gates=basis_gates, target=None))
+        # Resynthesize any 1q runs left after 2q consolidation, then force basis.
+        passes.append(Optimize1qGatesDecomposition(basis=basis_gates))
+        passes.append(BasisTranslator(_sel, basis_gates, None))
     return PassManager(passes).run(circuit)
 
 
@@ -139,15 +142,19 @@ def post_mapping_optimize_preserve_connectivity(circuit: QuantumCircuit, backend
     backend basis, keeping the final circuit hardware-compliant.
     """
     basis_gates, target = _get_backend_basis(backend)
-    passes = [
-        Optimize1qGates(target=target) if target is not None else Optimize1qGates(),
-        CommutativeCancellation(),
-        Collect2qBlocks(),
-    ]
+    passes = []
+    if basis_gates:
+        passes.append(Optimize1qGatesDecomposition(basis=basis_gates, target=target))
+    else:
+        passes.append(Optimize1qGatesDecomposition())
+    passes.append(CommutativeCancellation())
+    passes.append(Collect2qBlocks())
     if basis_gates:
         passes.append(ConsolidateBlocks(basis_gates=basis_gates))
         # Synthesize consolidated 2q unitaries (and other non-basis gates) into backend basis.
         passes.append(UnitarySynthesis(basis_gates=basis_gates, target=target))
+        passes.append(Optimize1qGatesDecomposition(basis=basis_gates, target=target))
+        passes.append(BasisTranslator(_sel, basis_gates, target))
     return PassManager(passes).run(circuit)
 
 

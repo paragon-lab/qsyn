@@ -64,12 +64,18 @@ ibmq_configuration_basis_gates(device::IBMQDevice const& device) {
         return std::nullopt;
     }
     auto const& device_json = device.jsons->device_json;
-    if (!device_json.contains("configuration") ||
-        !device_json["configuration"].contains("basis_gates")) {
+    // ``device_json`` is usually the IBM configuration object itself (has
+    // ``basis_gates`` at the top level). Calibration bundles written by
+    // ``device write --ibmq`` nest that object under ``configuration``.
+    nlohmann::json const* config = &device_json;
+    if (device_json.contains("configuration") && device_json["configuration"].is_object()) {
+        config = &device_json["configuration"];
+    }
+    if (!config->contains("basis_gates")) {
         return std::nullopt;
     }
     std::vector<std::string> basis;
-    for (auto const& gate : device_json["configuration"]["basis_gates"]) {
+    for (auto const& gate : (*config)["basis_gates"]) {
         basis.push_back(dvlab::str::tolower_string(gate.get<std::string>()));
     }
     return basis;

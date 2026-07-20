@@ -59,14 +59,17 @@ dvlab::Command device_print_cmd(qsyn::device::DeviceMgr& device_mgr) {
                 .action(store_true)
                 .help("print the connected components of the device");
             parser.add_argument<std::string>("--cost-fn")
-                .constraint(choices_allow_prefix({"log_success_rate", "default"}))
+                .constraint(choices_allow_prefix({"log_proxy_fidelity", "log_success_rate", "default"}))
                 .default_value("default")
                 .help("the cost function to use for the Floyd-Warshall algorithm");
         },
         [&device_mgr](ArgumentParser const& parser) {
             auto const cost_fn_str = parser.get<std::string>("--cost-fn");
             auto cost_fn           = default_floyd_warshall_cost;
-            if (dvlab::str::is_prefix_of(dvlab::str::tolower_string(cost_fn_str), "log_success_rate")) {
+            auto const cost_fn_lower = dvlab::str::tolower_string(cost_fn_str);
+            if (dvlab::str::is_prefix_of(cost_fn_lower, "log_proxy_fidelity")) {
+                cost_fn = log_proxy_fidelity_floyd_warshall_cost;
+            } else if (dvlab::str::is_prefix_of(cost_fn_lower, "log_success_rate")) {
                 cost_fn = log_success_rate_floyd_warshall_cost;
             }
 
@@ -154,7 +157,9 @@ dvlab::Command device_read_cmd(qsyn::device::DeviceMgr& device_mgr) {
                 parser.description("read a device topology");
 
                 parser.add_argument<std::string>("filepath")
-                    .help("the filepath to device file");
+                    .help(
+                        "path to a qsyn device file or an IBM calibration bundle "
+                        "(``device write --ibmq`` JSON)");
 
                 parser.add_argument<bool>("-r", "--replace")
                     .action(store_true)
@@ -163,6 +168,17 @@ dvlab::Command device_read_cmd(qsyn::device::DeviceMgr& device_mgr) {
             [&device_mgr](ArgumentParser const& parser) {
                 auto filepath = parser.get<std::string>("filepath");
                 auto replace  = parser.get<bool>("--replace");
+
+                if (auto ibmq_device = read_ibmq_calibration_bundle(filepath)) {
+                    if (device_mgr.empty() || !replace) {
+                        device_mgr.add(
+                            device_mgr.get_next_id(),
+                            std::make_unique<IBMQDevice>(std::move(*ibmq_device)));
+                    } else {
+                        device_mgr.set(std::make_unique<IBMQDevice>(std::move(*ibmq_device)));
+                    }
+                    return CmdExecResult::done;
+                }
 
                 auto device = read_qsyn_device_file(filepath);
 
@@ -195,7 +211,7 @@ dvlab::Command device_bonsai_cmd(qsyn::device::DeviceMgr& device_mgr) {
                 .action(store_true)
                 .help("Exhaustively search for the best ternary tree, stemming from all qubits. This flag is ignored if --root-qubit-id is specified.");
             parser.add_argument<std::string>("--cost-fn")
-                .constraint(choices_allow_prefix({"log_success_rate", "default"}))
+                .constraint(choices_allow_prefix({"log_proxy_fidelity", "log_success_rate", "default"}))
                 .default_value("default")
                 .help("cost function for Floyd-Warshall (used to pick tree center and order)");
         },
@@ -207,7 +223,10 @@ dvlab::Command device_bonsai_cmd(qsyn::device::DeviceMgr& device_mgr) {
             auto const n_qubits    = parser.get<size_t>("--n-qubits");
             auto const cost_fn_str = parser.get<std::string>("--cost-fn");
             auto cost_fn           = default_floyd_warshall_cost;
-            if (dvlab::str::is_prefix_of(dvlab::str::tolower_string(cost_fn_str), "log_success_rate")) {
+            auto const cost_fn_lower = dvlab::str::tolower_string(cost_fn_str);
+            if (dvlab::str::is_prefix_of(cost_fn_lower, "log_proxy_fidelity")) {
+                cost_fn = log_proxy_fidelity_floyd_warshall_cost;
+            } else if (dvlab::str::is_prefix_of(cost_fn_lower, "log_success_rate")) {
                 cost_fn = log_success_rate_floyd_warshall_cost;
             }
             bool exhaustive = parser.get<bool>("--exhaustive");

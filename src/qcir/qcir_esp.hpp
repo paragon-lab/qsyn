@@ -1,7 +1,7 @@
 /****************************************************************************
   PackageName  [ qcir ]
   Synopsis     [ Estimated success probability (ESP) for a circuit on a device ]
-  Author       [ Design Verification Lab ]
+  Author       [ Mu-Te Lau ]
 ****************************************************************************/
 
 #pragma once
@@ -31,6 +31,8 @@ struct EspResult {
     QCir const& qcir,
     device::Device const& device,
     std::vector<std::string>& unsupported_gate_reprs,
-    std::string& missing_calibration_detail);
+    std::string& missing_calibration_detail,
+    bool exclude_idle_qubits = false,
+    bool gates_only          = false);
 
 }  // namespace qsyn::qcir

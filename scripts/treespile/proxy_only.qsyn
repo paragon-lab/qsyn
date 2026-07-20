@@ -1,0 +1,12 @@
+//!ARGS FHAM OUT T N DEVICE COST_FN EXHAUSTIVE_FLAG
+// Proxy-fidelity-only treespile (no JW evolution / Aer).
+// EXHAUSTIVE_FLAG: pass "-e" or leave empty
+
+device fetch -f ${DEVICE}
+fham read ${FHAM}
+fham treespile ${T} ${N} --logical-index --cost-fn ${COST_FN} ${EXHAUSTIVE_FLAG}
+qcir translate --qiskit
+qcir write ${OUT}/QC_T.qasm
+qcir print --esp --esp-gates-only
+qcir print --proxy-fidelity --proxy-fidelity-gates-only
+device write --ibmq ${OUT}/device.json

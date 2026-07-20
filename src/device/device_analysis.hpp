@@ -24,6 +24,9 @@ using APSPCostFnType = std::function<float(Device::QubitPair const&, Device cons
 
 float default_floyd_warshall_cost(Device::QubitPair const& /*adj*/, Device const& /*device*/);
 float log_success_rate_floyd_warshall_cost(Device::QubitPair const& adj, Device const& device);
+/// Cost ``-log2(PF)`` with
+/// ``PF = (1 - ε) * sqrt(∏_q (2/3 e^{-t/T2} + 1/3 e^{-t/T1}))``.
+float log_proxy_fidelity_floyd_warshall_cost(Device::QubitPair const& adj, Device const& device);
 
 APSPResult floyd_warshall(
     Device const& device,

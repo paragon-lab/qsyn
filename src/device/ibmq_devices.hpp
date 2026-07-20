@@ -68,6 +68,10 @@ bool write_ibmq_calibration(
     IBMQDevice const& device,
     std::filesystem::path const& output_path);
 
+/// Load a device from ``device write --ibmq`` JSON (``qsyn_ibmq_calibration`` bundle).
+auto read_ibmq_calibration_bundle(std::filesystem::path const& path)
+    -> std::optional<IBMQDevice>;
+
 auto read_ibmq_device(IBMQDeviceJsons const& jsons) -> std::optional<IBMQDevice>;
 
 auto load_ibmq_devices_jsons(std::filesystem::path const& device_path,

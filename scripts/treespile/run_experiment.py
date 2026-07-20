@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -38,6 +39,57 @@ from qbham_evolution import compute_evolution
 from qasm_utils import DEFAULT_MAX_QUBITS, REPO_ROOT, find_qsyn_binary
 
 EXPERIMENT_QSYN = SCRIPT_DIR / "experiment.qsyn"
+ESP_QSYN = SCRIPT_DIR / "esp.qsyn"
+
+_ESP_RE = re.compile(
+    r"Estimated success probability \(ESP\):\s*([\d.eE+-]+)"
+)
+_PROXY_FIDELITY_RE = re.compile(
+    r"Proxy fidelity:\s*([\d.eE+-]+)"
+)
+
+
+def parse_reliability_metrics(text: str) -> tuple[float, float]:
+    esp_match = _ESP_RE.search(text)
+    if not esp_match:
+        raise ValueError("ESP not found in qsyn output")
+    proxy_match = _PROXY_FIDELITY_RE.search(text)
+    if not proxy_match:
+        raise ValueError("proxy fidelity not found in qsyn output")
+    return float(esp_match.group(1)), float(proxy_match.group(1))
+
+
+def _print_qsyn_output(result: subprocess.CompletedProcess[str]) -> None:
+    if result.stdout:
+        print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="", file=sys.stderr)
+
+
+def measure_reliability(
+    qsyn_path: Path,
+    device_json: Path,
+    qcir_path: Path,
+) -> tuple[float, float]:
+    if not device_json.is_file():
+        raise FileNotFoundError(f"missing device calibration bundle: {device_json}")
+
+    cmd = [
+        str(qsyn_path),
+        str(ESP_QSYN),
+        str(device_json.resolve()),
+        str(qcir_path.resolve()),
+    ]
+    print("+", " ".join(cmd))
+    result = subprocess.run(
+        cmd,
+        check=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    _print_qsyn_output(result)
+    return parse_reliability_metrics(result.stdout)
 
 
 def run_qsyn(
@@ -47,7 +99,9 @@ def run_qsyn(
     time: float,
     steps: int,
     device: str,
-) -> None:
+    cost_fn: str = "default",
+    exhaustive: bool = False,
+) -> tuple[float, float]:
     out_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         str(qsyn_path),
@@ -57,9 +111,19 @@ def run_qsyn(
         str(time),
         str(steps),
         device,
+        cost_fn,
+        "-e" if exhaustive else "",
     ]
     print("+", " ".join(cmd))
-    subprocess.run(cmd, check=True, cwd=REPO_ROOT)
+    result = subprocess.run(
+        cmd,
+        check=True,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    _print_qsyn_output(result)
+    return parse_reliability_metrics(result.stdout)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -87,6 +151,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--fake-device",
         action="store_true",
         help="prefix --device with fake_ when calling qsyn device fetch -f",
+    )
+    parser.add_argument(
+        "--cost-fn",
+        type=str,
+        default="default",
+        choices=["default", "log_success_rate", "log_proxy_fidelity"],
+        help="Floyd-Warshall cost for ternary-tree / treespile (default: default)",
+    )
+    parser.add_argument(
+        "-e",
+        "--exhaustive",
+        action="store_true",
+        help="exhaustively search bonsai roots inside treespile",
     )
     parser.add_argument(
         "--qsyn",
@@ -172,10 +249,27 @@ def main(argv: list[str] | None = None) -> int:
         device_name = f"fake_{device_name}"
 
     try:
+        esp: float | None = None
+        proxy_fidelity: float | None = None
         if not args.skip_qsyn:
-            run_qsyn(qsyn_path, args.fham, out_dir, args.time, args.steps, device_name)
+            esp, proxy_fidelity = run_qsyn(
+                qsyn_path,
+                args.fham,
+                out_dir,
+                args.time,
+                args.steps,
+                device_name,
+                cost_fn=args.cost_fn,
+                exhaustive=args.exhaustive,
+            )
 
         require_artifacts(paths, need_noisy=False)
+
+        if args.skip_qsyn:
+            print(f"\n=== Reliability metrics (ESP / proxy fidelity) ===")
+            esp, proxy_fidelity = measure_reliability(
+                qsyn_path, paths["device"], paths["qc_t"]
+            )
 
         calibration_path = args.ibmq_calibration
         if calibration_path is None and paths["device"].is_file():
@@ -220,12 +314,20 @@ def main(argv: list[str] | None = None) -> int:
             noisy_path,
         )
         print(format_metrics(metrics))
+        if esp is not None:
+            print(f"Estimated success probability (ESP): {esp:.12f}")
+        if proxy_fidelity is not None:
+            print(f"Proxy fidelity:                      {proxy_fidelity:.12f}")
 
         results = {
             "fham": str(args.fham.resolve()),
             "time": args.time,
             "trotter_steps": args.steps,
             "device": device_name,
+            "cost_fn": args.cost_fn,
+            "exhaustive": args.exhaustive,
+            "esp": esp,
+            "proxy_fidelity": proxy_fidelity,
             "trotterization_fidelity": metrics.trotterization,
             "noise_fidelity": metrics.noise,
             "total_fidelity": metrics.total,
@@ -241,6 +343,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     except subprocess.CalledProcessError as exc:
+        if exc.stdout:
+            print(exc.stdout, end="")
+        if exc.stderr:
+            print(exc.stderr, end="", file=sys.stderr)
         print(f"Error: qsyn command failed with exit code {exc.returncode}", file=sys.stderr)
         return exc.returncode or 1
     except (FileNotFoundError, ValueError) as exc:

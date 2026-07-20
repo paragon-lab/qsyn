@@ -252,4 +252,52 @@ bool write_ibmq_calibration(
     return true;
 }
 
+auto read_ibmq_calibration_bundle(std::filesystem::path const& path)
+    -> std::optional<IBMQDevice> {
+    std::ifstream in(path);
+    if (!in) {
+        return std::nullopt;
+    }
+
+    nlohmann::json bundle;
+    try {
+        in >> bundle;
+    } catch (nlohmann::json::exception const&) {
+        return std::nullopt;
+    }
+
+    if (!bundle.contains("qsyn_ibmq_calibration")) {
+        return std::nullopt;
+    }
+    if (!bundle.contains("configuration") || !bundle.contains("properties")) {
+        spdlog::error(
+            "IBM calibration bundle {} is missing configuration or properties",
+            path.string());
+        return std::nullopt;
+    }
+
+    IBMQDeviceJsons jsons{
+        .source          = IBMQDeviceJsonsSource::unknown,
+        .device_json     = bundle["configuration"],
+        .properties_json = bundle["properties"],
+    };
+
+    auto device = read_ibmq_device(jsons);
+    if (!device.has_value()) {
+        spdlog::error("Failed to parse IBM calibration bundle {}", path.string());
+        return std::nullopt;
+    }
+
+    if (bundle.contains("physical_qubits")) {
+        std::vector<QubitIdType> physical_qubits;
+        physical_qubits.reserve(bundle["physical_qubits"].size());
+        for (auto const& q : bundle["physical_qubits"]) {
+            physical_qubits.push_back(q.get<QubitIdType>());
+        }
+        device->parent_physical_qubits = std::move(physical_qubits);
+    }
+
+    return device;
+}
+
 }  // namespace qsyn::device

@@ -15,7 +15,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(SCRIPT_DIR))
 
-import nativize_and_optimize_qasm as opt
+import translate_and_optimize_qasm as opt
 
 CSV_NAME = "proxy_evaluation_fidelity.csv"
 DEFAULT_SAMPLES = 500
@@ -121,7 +121,7 @@ def main() -> None:
             try:
                 qc = QuantumCircuit.from_qasm_file(str(qasm_filename))
 
-                qc_native = opt.nativize_gate_set(qc, backend)
+                qc_native = opt.translate_gate_set(qc, backend)
                 qc_opt = opt.post_mapping_optimize_preserve_connectivity(qc_native, backend)
 
                 total_log_infidelity = 0.0

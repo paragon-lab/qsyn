@@ -38,6 +38,49 @@ float log_success_rate_floyd_warshall_cost(Device::QubitPair const& adj, Device 
 }
 
 /**
+ * @brief Additive cost ``-log2(PF)`` for Floyd-Warshall, where
+ *        ``PF = (1 - ε) √(∏_{q∈{q1,q2}} (2/3 e^{-t/T2} + 1/3 e^{-t/T1}))``
+ *        approximates the gate proxy fidelity (depolarizing + thermal).
+ *        Gate time is converted from ns to µs to match device T1/T2 units.
+ *        Returns infinity when the coupling is broken or T1/T2 is missing.
+ */
+float log_proxy_fidelity_floyd_warshall_cost(Device::QubitPair const& adj, Device const& device) {
+    // assumes the first gate info is the only one for this adjacency
+    auto const& gate_info = device.get_gate_info(adj)[0];
+    auto const success    = 1.f - gate_info.error;
+    if (success <= 0.f) {
+        return std::numeric_limits<float>::infinity();
+    }
+
+    auto const& props_src = device.get_qubit_properties(adj.src);
+    auto const& props_dst = device.get_qubit_properties(adj.dst);
+    if (!props_src.t1.has_value() || !props_src.t2.has_value() ||
+        !props_dst.t1.has_value() || !props_dst.t2.has_value() ||
+        *props_src.t1 <= 0.f || *props_src.t2 <= 0.f ||
+        *props_dst.t1 <= 0.f || *props_dst.t2 <= 0.f) {
+        return std::numeric_limits<float>::infinity();
+    }
+
+    // GateDelayNanoSec::count() is nanoseconds; T1/T2 are microseconds.
+    auto const t_us = gate_info.time.count() * 1e-3f;
+
+    auto const thermal = [t_us](float t1, float t2) {
+        return (2.f / 3.f) * std::exp(-t_us / t2) + (1.f / 3.f) * std::exp(-t_us / t1);
+    };
+
+    auto const pf =
+        success *
+        std::sqrt(
+            thermal(*props_src.t1, *props_src.t2) *
+            thermal(*props_dst.t1, *props_dst.t2));
+    if (pf <= 0.f) {
+        return std::numeric_limits<float>::infinity();
+    }
+
+    return -std::log2(pf);
+}
+
+/**
  * @brief Floyd-Warshall APSP for the device coupling graph.
  *        Wraps cost_fn so broken couplings (error == 1) always get cost inf, then delegates to generic APSP.
  */

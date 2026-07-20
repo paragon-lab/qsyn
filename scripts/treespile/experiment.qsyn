@@ -1,6 +1,7 @@
-//!ARGS FHAM OUT T N DEVICE
+//!ARGS FHAM OUT T N DEVICE COST_FN EXHAUSTIVE_FLAG
 // Treespile encoding experiment: JW ground truth + TT treespile circuit + Clifford C.
 // Invoked by scripts/treespile/run_experiment.py
+// EXHAUSTIVE_FLAG: pass "-e" or leave empty
 
 device fetch -f ${DEVICE}
 fham read ${FHAM}
@@ -9,12 +10,14 @@ qbham write ${OUT}/H_jw.txt
 
 fham read ${FHAM}
 device fetch -f ${DEVICE}
-fham qubitize -s ternary_tree
+fham qubitize -s ternary_tree --cost-fn ${COST_FN}
 qbham write ${OUT}/H_T.txt
-fham treespile ${T} ${N} --logical-index
+fham treespile ${T} ${N} --logical-index --cost-fn ${COST_FN} ${EXHAUSTIVE_FLAG}
 qcir write ${OUT}/QC_T_untranspiled.qasm
 qcir translate --qiskit
 qcir write ${OUT}/QC_T.qasm
+qcir print --esp --esp-gates-only
+qcir print --proxy-fidelity --proxy-fidelity-gates-only
 
 convert fham tableau --encoding
 convert tableau qcir

@@ -69,7 +69,8 @@ FhamQubitizeOutcome qubitize_fham_workspace(
     bool strategy_explicit,
     std::string const& strategy_str,
     bool optimize1,
-    bool optimize2) {
+    bool optimize2,
+    device::APSPCostFnType const& cost_fn) {
     auto const& f_ham = workspace.hamiltonian;
 
     if (!strategy_explicit && workspace.encoding != nullptr) {
@@ -103,7 +104,7 @@ FhamQubitizeOutcome qubitize_fham_workspace(
         } else {
             fmt::println("Using device topology to build ternary tree.");
 
-            auto apsp        = device::floyd_warshall(*dev_ptr, device::default_floyd_warshall_cost);
+            auto apsp        = device::floyd_warshall(*dev_ptr, cost_fn);
             auto tree_result = build_bonsai_ternary_tree(*dev_ptr, apsp, f_ham.n_modes());
 
             if (tree_result.has_value()) {
@@ -173,6 +174,13 @@ dvlab::Command fham_qubitize_cmd(FermionHamiltonianMgr& fham_mgr, QubitHamiltoni
             parser.add_argument<bool>("-o2", "--optimize2")
                 .action(store_true)
                 .help("Run simulated annealing to minimize proxy fidelity (only applies to ternary_tree strategy)");
+
+            parser.add_argument<std::string>("--cost-fn")
+                .constraint(choices_allow_prefix({"log_proxy_fidelity", "log_success_rate", "default"}))
+                .default_value("default")
+                .help(
+                    "cost function for Floyd-Warshall when building a device bonsai tree "
+                    "(only applies to ternary_tree strategy)");
         },
         [&](ArgumentParser const& parser) {
             if (!dvlab::utils::mgr_has_data(fham_mgr)) {
@@ -184,6 +192,14 @@ dvlab::Command fham_qubitize_cmd(FermionHamiltonianMgr& fham_mgr, QubitHamiltoni
             bool const strategy_explicit = parser.parsed("--strategy");
             bool optimize1               = parser.get<bool>("--optimize1");
             bool optimize2               = parser.get<bool>("--optimize2");
+            auto const cost_fn_str       = parser.get<std::string>("--cost-fn");
+            auto cost_fn                 = device::default_floyd_warshall_cost;
+            auto const cost_fn_lower     = dvlab::str::tolower_string(cost_fn_str);
+            if (dvlab::str::is_prefix_of(cost_fn_lower, "log_proxy_fidelity")) {
+                cost_fn = device::log_proxy_fidelity_floyd_warshall_cost;
+            } else if (dvlab::str::is_prefix_of(cost_fn_lower, "log_success_rate")) {
+                cost_fn = device::log_success_rate_floyd_warshall_cost;
+            }
 
             auto const outcome = qubitize_fham_workspace(
                 *workspace,
@@ -191,7 +207,8 @@ dvlab::Command fham_qubitize_cmd(FermionHamiltonianMgr& fham_mgr, QubitHamiltoni
                 strategy_explicit,
                 strategy_explicit ? parser.get<std::string>("--strategy") : std::string{},
                 optimize1,
-                optimize2);
+                optimize2,
+                cost_fn);
 
             size_t id = qbham_mgr.get_next_id();
             qbham_mgr.add(id, std::make_unique<QubitHamiltonian>(std::move(outcome.q_ham)));
@@ -270,7 +287,7 @@ dvlab::Command fham_bonsai_cmd(device::DeviceMgr& device_mgr, FermionHamiltonian
                 .action(store_true)
                 .help("Exhaustively search for the best ternary tree, stemming from all qubits. This flag is ignored if --root-qubit-id is specified.");
             parser.add_argument<std::string>("--cost-fn")
-                .constraint(choices_allow_prefix({"log_success_rate", "default"}))
+                .constraint(choices_allow_prefix({"log_proxy_fidelity", "log_success_rate", "default"}))
                 .default_value("default")
                 .help("cost function for Floyd-Warshall (used to pick tree center and order)");
         },
@@ -291,7 +308,10 @@ dvlab::Command fham_bonsai_cmd(device::DeviceMgr& device_mgr, FermionHamiltonian
             auto const& device     = *device_mgr.get();
             auto const cost_fn_str = parser.get<std::string>("--cost-fn");
             auto cost_fn           = device::default_floyd_warshall_cost;
-            if (dvlab::str::is_prefix_of(dvlab::str::tolower_string(cost_fn_str), "log_success_rate")) {
+            auto const cost_fn_lower = dvlab::str::tolower_string(cost_fn_str);
+            if (dvlab::str::is_prefix_of(cost_fn_lower, "log_proxy_fidelity")) {
+                cost_fn = device::log_proxy_fidelity_floyd_warshall_cost;
+            } else if (dvlab::str::is_prefix_of(cost_fn_lower, "log_success_rate")) {
                 cost_fn = device::log_success_rate_floyd_warshall_cost;
             }
             bool exhaustive = parser.get<bool>("--exhaustive");
@@ -405,7 +425,7 @@ dvlab::Command fham_treespile_cmd(
             parser.add_argument<size_t>("n-steps")
                 .help("Number of trotterization steps to apply");
             parser.add_argument<std::string>("--cost-fn")
-                .constraint(choices_allow_prefix({"log_success_rate", "default"}))
+                .constraint(choices_allow_prefix({"log_proxy_fidelity", "log_success_rate", "default"}))
                 .default_value("default")
                 .help("cost function for Floyd-Warshall used inside treespile");
             parser.add_argument<bool>("-o1", "--optimize1")
@@ -450,7 +470,10 @@ dvlab::Command fham_treespile_cmd(
             bool exhaustive        = parser.get<bool>("--exhaustive");
             bool use_logical_index = parser.get<bool>("--logical-index");
             auto cost_fn           = device::default_floyd_warshall_cost;
-            if (dvlab::str::is_prefix_of(dvlab::str::tolower_string(cost_fn_str), "log_success_rate")) {
+            auto const cost_fn_lower = dvlab::str::tolower_string(cost_fn_str);
+            if (dvlab::str::is_prefix_of(cost_fn_lower, "log_proxy_fidelity")) {
+                cost_fn = device::log_proxy_fidelity_floyd_warshall_cost;
+            } else if (dvlab::str::is_prefix_of(cost_fn_lower, "log_success_rate")) {
                 cost_fn = device::log_success_rate_floyd_warshall_cost;
             }
 

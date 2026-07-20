@@ -1,0 +1,8 @@
+//!ARGS DEVICE_JSON QCIR
+// Measure estimated success probability for a transpiled circuit on a device.
+// Invoked by scripts/treespile/run_experiment.py when --skip-qsyn is set.
+
+device read ${DEVICE_JSON}
+qcir read ${QCIR}
+qcir print --esp --esp-gates-only
+qcir print --proxy-fidelity --proxy-fidelity-gates-only

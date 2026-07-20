@@ -30,6 +30,7 @@
 #include "qcir/qcir_equiv.hpp"
 #include "qcir/qcir_esp.hpp"
 #include "qcir/qcir_gate.hpp"
+#include "qcir/qcir_proxy_fidelity.hpp"
 #include "qcir/qcir_io.hpp"
 #include "qcir/qcir_translate.hpp"
 #include "util/cin_cout_cerr.hpp"
@@ -316,12 +317,39 @@ dvlab::Command qcir_print_cmd(QCirMgr const& qcir_mgr, qsyn::device::DeviceMgr c
                 .action(store_true)
                 .help(
                     "print estimated success probability (ESP) using gate and readout "
-                    "errors from the focused device. This option requires a device to be loaded.");
+                    "errors from the focused device. The circuit must use device-native "
+                    "gates only. This option requires a device to be loaded.");
+            mutex.add_argument<bool>("--proxy-fidelity")
+                .action(store_true)
+                .help(
+                    "print proxy fidelity (Wu et al. 2026) using depolarizing, thermal "
+                    "relaxation, and SPAM channels from the focused device. The circuit "
+                    "must use device-native gates only. This option requires a device to "
+                    "be loaded.");
             mutex.add_argument<bool>("-d", "--diagram")
                 .action(store_true)
                 .help(
                     "print the circuit diagram. If `--verbose` is also "
                     "specified, print the circuit diagram in the qiskit style");
+
+            parser.add_argument<bool>("--esp-active-only")
+                .action(store_true)
+                .help(
+                    "when used with --esp, exclude idle qubits from the readout-error "
+                    "product (gate product is unchanged)");
+            parser.add_argument<bool>("--esp-gates-only")
+                .action(store_true)
+                .help(
+                    "when used with --esp, compute ESP from gate errors only (exclude readout)");
+            parser.add_argument<bool>("--proxy-fidelity-active-only")
+                .action(store_true)
+                .help(
+                    "when used with --proxy-fidelity, exclude qubits that do not experience "
+                    "any gates from the product of per-qubit proxy fidelities");
+            parser.add_argument<bool>("--proxy-fidelity-gates-only")
+                .action(store_true)
+                .help(
+                    "when used with --proxy-fidelity, omit the final SPAM/readout factor");
         },
         [&](ArgumentParser const& parser) {
             if (!dvlab::utils::mgr_has_data(qcir_mgr)) {
@@ -341,7 +369,9 @@ dvlab::Command qcir_print_cmd(QCirMgr const& qcir_mgr, qsyn::device::DeviceMgr c
                     *qcir_mgr.get(),
                     *device_mgr.get(),
                     unsupported,
-                    missing_detail);
+                    missing_detail,
+                    parser.get<bool>("--esp-active-only"),
+                    parser.get<bool>("--esp-gates-only"));
 
                 if (!result.has_value()) {
                     switch (result.error()) {
@@ -373,10 +403,100 @@ dvlab::Command qcir_print_cmd(QCirMgr const& qcir_mgr, qsyn::device::DeviceMgr c
                 }
 
                 fmt::println("Estimated success probability (ESP): {:.6g}", result->esp);
-                fmt::println("  Gates: {} (product of (1 - gate error))", result->num_gates);
                 fmt::println(
-                    "  Measurements: {} (product of (1 - readout error) per circuit qubit)",
-                    result->num_measurements);
+                    "  Gates: {} (product of (1 - gate error) over each gate once)",
+                    result->num_gates);
+                if (parser.get<bool>("--esp-gates-only")) {
+                    fmt::println("  Readout: excluded");
+                } else {
+                    fmt::println(
+                        "  Measurements: {} (readout error multiplied once per included qubit)",
+                        result->num_measurements);
+                }
+                fmt::println(
+                    "  Aggregation: product over gates{}",
+                    parser.get<bool>("--esp-active-only")
+                        ? " (idle-qubit readout excluded)"
+                        : "");
+                fmt::println("  Device: {}", device_mgr.get()->get_name());
+                return CmdExecResult::done;
+            }
+
+            if (parser.get<bool>("--proxy-fidelity")) {
+                if (device_mgr.empty()) {
+                    spdlog::error(
+                        "No device loaded. Use `device read` or `device fetch` to load a device first.");
+                    return CmdExecResult::error;
+                }
+
+                std::vector<std::string> unsupported;
+                std::string missing_detail;
+                auto const result = calculate_proxy_fidelity(
+                    *qcir_mgr.get(),
+                    *device_mgr.get(),
+                    unsupported,
+                    missing_detail,
+                    parser.get<bool>("--proxy-fidelity-active-only"),
+                    parser.get<bool>("--proxy-fidelity-gates-only"));
+
+                if (!result.has_value()) {
+                    switch (result.error()) {
+                        case ProxyFidelityError::circuit_qubit_out_of_range:
+                            spdlog::error(
+                                "Circuit uses qubit indices outside the focused device "
+                                "({} qubits)",
+                                device_mgr.get()->get_num_qubits());
+                            break;
+                        case ProxyFidelityError::unsupported_gates:
+                            spdlog::error(
+                                "Circuit contains gates not supported on the device: [{}]",
+                                fmt::join(unsupported, ", "));
+                            spdlog::error(
+                                "Use `qcir translate --qiskit` or `qcir translate <gate_set>` first.");
+                            break;
+                        case ProxyFidelityError::missing_gate_calibration:
+                            spdlog::error(
+                                "Missing gate error/duration calibration for {}",
+                                missing_detail);
+                            break;
+                        case ProxyFidelityError::missing_relaxation_calibration:
+                            spdlog::error(
+                                "Missing T1/T2 calibration for {}",
+                                missing_detail);
+                            break;
+                        case ProxyFidelityError::missing_readout_calibration:
+                            spdlog::error(
+                                "Missing measurement/readout error calibration for {}",
+                                missing_detail);
+                            break;
+                    }
+                    return CmdExecResult::error;
+                }
+
+                fmt::println("Proxy fidelity: {:.6g}", result->proxy_fidelity);
+                fmt::println(
+                    "  Gates: {} (depolarizing + thermal relaxation per gate on each qubit)",
+                    result->num_gates);
+                if (parser.get<bool>("--proxy-fidelity-gates-only")) {
+                    fmt::println("  SPAM/readout: excluded");
+                } else {
+                    fmt::println(
+                        "  Measurements: {} (SPAM/readout error applied per included qubit)",
+                        result->num_measurements);
+                }
+                fmt::println(
+                    "  Aggregation: product of per-qubit proxy fidelities{}",
+                    parser.get<bool>("--proxy-fidelity-active-only")
+                        ? " (active qubits only)"
+                        : "");
+                if (parser.parsed("--verbose")) {
+                    for (size_t q = 0; q < result->per_qubit_fidelity.size(); ++q) {
+                        fmt::println(
+                            "  Qubit {}: {:.6g}",
+                            q,
+                            result->per_qubit_fidelity[q]);
+                    }
+                }
                 fmt::println("  Device: {}", device_mgr.get()->get_name());
                 return CmdExecResult::done;
             }
