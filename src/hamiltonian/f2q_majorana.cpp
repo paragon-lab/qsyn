@@ -8,14 +8,24 @@
 #include <fmt/core.h>
 
 #include <cmath>
+#include <complex>
 #include <stdexcept>
+#include <unordered_map>
 #include <vector>
 
+#include "tableau/pauli_product_trait.hpp"
 #include "tableau/stabilizer_tableau.hpp"
 
 namespace qsyn::hamiltonian {
 
-using Pauli = qsyn::tableau::Pauli;
+using Pauli        = qsyn::tableau::Pauli;
+using PauliProduct = qsyn::tableau::PauliProduct;
+
+namespace {
+
+constexpr double k_coeff_tol = 1e-12;
+
+}  // namespace
 
 ComplexPauliTerm jw_majorana_term(std::size_t n_modes, std::size_t index) {
     if (index >= 2 * n_modes) {
@@ -38,6 +48,19 @@ std::string majorana_label(std::size_t index) {
     return fmt::format("gamma_{} (mode {}, {})", index, mode, part);
 }
 
+ComplexPauliTerm jw_map_majorana_product(
+    std::size_t n_modes,
+    std::complex<double> coeff,
+    std::vector<std::size_t> const& indices) {
+    ComplexPauliTerm result(
+        std::vector<Pauli>(n_modes, Pauli::i),
+        coeff);
+    for (auto const index : indices) {
+        result *= jw_majorana_term(n_modes, index);
+    }
+    return result;
+}
+
 ComplexPauliTerm conjugate_pauli_term(
     ComplexPauliTerm const& term,
     qsyn::tableau::StabilizerTableau const& clifford) {
@@ -45,6 +68,72 @@ ComplexPauliTerm conjugate_pauli_term(
     auto ops   = qsyn::tableau::extract_clifford_operators(clifford);
     pauli.apply(ops);
     return ComplexPauliTerm(pauli, term.coeff());
+}
+
+ComplexPauliTerm mapped_majorana_term(
+    FermionToQubitMapping const& mapping,
+    std::size_t index) {
+    auto const jw = jw_majorana_term(mapping.n_modes(), index);
+    return conjugate_pauli_term(jw, mapping.to_clifford());
+}
+
+ComplexPauliTerm map_majorana_product(
+    FermionToQubitMapping const& mapping,
+    std::complex<double> coeff,
+    std::vector<std::size_t> const& indices) {
+    auto const jw = jw_map_majorana_product(mapping.n_modes(), coeff, indices);
+    return conjugate_pauli_term(jw, mapping.to_clifford());
+}
+
+QubitHamiltonian qubitize(
+    MajoranaHamiltonian const& m_ham,
+    FermionToQubitMapping const& mapping) {
+    std::size_t const n_modes = m_ham.n_modes();
+    if (mapping.n_modes() != n_modes) {
+        throw std::invalid_argument(fmt::format(
+            "Mapping has {} modes but Majorana Hamiltonian has {}",
+            mapping.n_modes(),
+            n_modes));
+    }
+
+    auto const clifford = mapping.to_clifford();
+    std::unordered_map<PauliProduct, std::complex<double>> term_map;
+
+    for (auto const& [coeff, indices] : m_ham.get_terms()) {
+        auto const jw     = jw_map_majorana_product(n_modes, coeff, indices);
+        auto const mapped = conjugate_pauli_term(jw, clifford);
+        term_map[mapped.pauli_product()] += mapped.coeff();
+    }
+
+    QubitHamiltonian final_ham(n_modes);
+    for (auto const& [pauli_product, coeff] : term_map) {
+        if (std::abs(coeff.real()) < k_coeff_tol && std::abs(coeff.imag()) < k_coeff_tol) {
+            continue;
+        }
+        // Hermitian fermionic Hamiltonians yield real Pauli coefficients.
+        final_ham.add_term(HermitianPauliTerm(pauli_product, coeff.real()));
+    }
+    return final_ham;
+}
+
+QubitHamiltonian qubitize_jw(MajoranaHamiltonian const& m_ham) {
+    return qubitize(m_ham, JordanWignerMapping{m_ham.n_modes()});
+}
+
+QubitHamiltonian qubitize_jw(FermionHamiltonian const& f_ham) {
+    return qubitize(f_ham, JordanWignerMapping{f_ham.n_modes()});
+}
+
+QubitHamiltonian qubitize_tt(
+    MajoranaHamiltonian const& m_ham,
+    TernaryTreeMapping const& mapping) {
+    return qubitize(m_ham, mapping);
+}
+
+QubitHamiltonian qubitize_tt(
+    FermionHamiltonian const& f_ham,
+    TernaryTreeMapping const& mapping) {
+    return qubitize(f_ham, mapping);
 }
 
 namespace {

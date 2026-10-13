@@ -9,6 +9,7 @@
 #include <memory>
 
 #include "hamiltonian/fermionic_hamiltonian.hpp"
+#include "hamiltonian/majorana_hamiltonian.hpp"
 #include "hamiltonian/qubit_hamiltonian.hpp"
 #include "tableau/stabilizer_tableau.hpp"
 #include "ternarytree/ternary_tree.hpp"
@@ -93,6 +94,17 @@ private:
     TTMapper _mapper;
 };
 
+/**
+ * @brief Map a Majorana Hamiltonian to Paulis under ``mapping``.
+ *
+ * Expands each Majorana monomial under JW, then conjugates by
+ * ``mapping.to_clifford()``. Imaginary residuals below tolerance are dropped.
+ */
+QubitHamiltonian qubitize(
+    MajoranaHamiltonian const& m_ham,
+    FermionToQubitMapping const& mapping);
+
+/// ``to_majorana(f_hamilt)`` then ``qubitize`` under ``mapping``.
 QubitHamiltonian qubitize(
     FermionHamiltonian const& f_hamilt,
     FermionToQubitMapping const& mapping);
