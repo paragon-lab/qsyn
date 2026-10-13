@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <random>
@@ -32,18 +33,21 @@ struct SimulatedAnnealing {
      * @param min_temp Minimum temperature.
      * @param cost_fn Cost function.
      * @param mutate_fns Mutate functions.
+     * @param seed Optional RNG seed. If omitted, uses ``std::random_device``.
      */
     SimulatedAnnealing(
         double init_temp,
         double cooling_rate,
         double min_temp,
         CostFn cost_fn,
-        std::vector<MutateFn> mutate_fns)
+        std::vector<MutateFn> mutate_fns,
+        std::optional<std::uint32_t> seed = std::nullopt)
         : _init_temp(init_temp),
           _cooling_rate(cooling_rate),
           _min_temp(min_temp),
           _cost_fn(cost_fn),
-          _mutate_fns(std::move(mutate_fns)) {
+          _mutate_fns(std::move(mutate_fns)),
+          _gen(seed.has_value() ? std::mt19937{*seed} : std::mt19937{std::random_device{}()}) {
         auto const n_mutate_fns = _mutate_fns.size();
 
         std::vector<ProbType> mutate_fn_probs(n_mutate_fns, 1.0 / n_mutate_fns);
@@ -58,6 +62,7 @@ struct SimulatedAnnealing {
      * @param cost_fn Cost function.
      * @param mutate_fns Mutate functions.
      * @param mutate_fn_probs Probabilities for each mutate function.
+     * @param seed Optional RNG seed. If omitted, uses ``std::random_device``.
      */
     SimulatedAnnealing(
         double init_temp,
@@ -65,12 +70,14 @@ struct SimulatedAnnealing {
         double min_temp,
         CostFn cost_fn,
         std::vector<MutateFn> mutate_fns,
-        std::vector<ProbType> mutate_fn_probs)
+        std::vector<ProbType> mutate_fn_probs,
+        std::optional<std::uint32_t> seed = std::nullopt)
         : _init_temp(init_temp),
           _cooling_rate(cooling_rate),
           _min_temp(min_temp),
           _cost_fn(cost_fn),
-          _mutate_fns(std::move(mutate_fns)) {
+          _mutate_fns(std::move(mutate_fns)),
+          _gen(seed.has_value() ? std::mt19937{*seed} : std::mt19937{std::random_device{}()}) {
         _mutate_fn_dist = std::discrete_distribution<size_t>(mutate_fn_probs.begin(), mutate_fn_probs.end());
     }
 
@@ -126,7 +133,7 @@ private:
     CostFn _cost_fn;
     std::vector<MutateFn> _mutate_fns;
     std::discrete_distribution<size_t> mutable _mutate_fn_dist;
-    std::mt19937 mutable _gen{std::random_device{}()};
+    std::mt19937 mutable _gen;
 
     std::uniform_real_distribution<ProbType> mutable _prob_dist{0.0, 1.0};
 

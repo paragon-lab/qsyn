@@ -81,7 +81,6 @@ tl::expected<ProxyFidelityResult, ProxyFidelityError> calculate_proxy_fidelity(
 
     std::vector<double> qubit_fidelity(num_qubits, 1.0);
     std::vector<bool> qubit_has_gates(num_qubits, false);
-    size_t num_gates = 0;
 
     for (auto const* gate : qcir.get_gates()) {
         auto const& op         = gate->get_operation();
@@ -150,7 +149,6 @@ tl::expected<ProxyFidelityResult, ProxyFidelityError> calculate_proxy_fidelity(
                 static_cast<double>(*props.t2));
             qubit_has_gates[qubit] = true;
         }
-        ++num_gates;
     }
 
     size_t num_measurements = 0;
@@ -181,7 +179,7 @@ tl::expected<ProxyFidelityResult, ProxyFidelityError> calculate_proxy_fidelity(
     return ProxyFidelityResult{
         .proxy_fidelity     = proxy_fidelity,
         .per_qubit_fidelity = std::move(qubit_fidelity),
-        .num_gates          = num_gates,
+        .num_gates          = qcir.get_num_gates(),
         .num_measurements   = num_measurements,
     };
 }

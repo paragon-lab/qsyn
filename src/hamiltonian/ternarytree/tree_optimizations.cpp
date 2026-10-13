@@ -8,7 +8,11 @@
 
 #include <fmt/format.h>
 
+#include <array>
 #include <algorithm>
+#include <cstdint>
+#include <optional>
+#include <random>
 #include <vector>
 
 #include "device/device.hpp"
@@ -22,8 +26,8 @@
 
 namespace qsyn::hamiltonian {
 
-void TreeOracle::dfs(const TernaryTree& tree, const dvlab::APSPResult<QubitIdType>& apsp, int& timer,
-                     size_t v, size_t p, int current_depth, double cost_from_parent) {
+void TreeOracle::_dfs(TernaryTree const& tree, dvlab::APSPResult<QubitIdType> const& apsp, int& timer,
+                      size_t v, size_t p, int current_depth, double cost_from_parent) {
     _parent[v]       = p;
     _depth[v]        = current_depth;
     _edge_cost_up[v] = cost_from_parent;
@@ -42,14 +46,14 @@ void TreeOracle::dfs(const TernaryTree& tree, const dvlab::APSPResult<QubitIdTyp
                     size_t phys_next = child_node->qubit_label.value();
 
                     double weight = apsp.distance[phys_v][phys_next];
-                    dfs(tree, apsp, timer, next, v, current_depth + 1, weight);
+                    _dfs(tree, apsp, timer, next, v, current_depth + 1, weight);
                 }
             }
         }
     }
-};
+}
 
-double TreeOracle::calc_branch_tail(const dvlab::APSPResult<QubitIdType>& apsp, TernaryQubitNode* start_node, BranchType initial_branch) {
+double TreeOracle::_calc_branch_tail(dvlab::APSPResult<QubitIdType> const& apsp, TernaryQubitNode* start_node, BranchType initial_branch) {
     TernaryEdge* edge = start_node->get_edge(initial_branch);
     if (!edge || !edge->target || edge->target->is_leg()) return 0.0;
 
@@ -72,10 +76,9 @@ double TreeOracle::calc_branch_tail(const dvlab::APSPResult<QubitIdType>& apsp, 
         phys_curr = phys_next;
     }
     return cost;
-};
+}
 
-TreeOracle::TreeOracle(const TernaryTree& tree, const dvlab::APSPResult<QubitIdType>& apsp) {
-    _n_modes = tree.num_qubits();
+TreeOracle::TreeOracle(TernaryTree const& tree, dvlab::APSPResult<QubitIdType> const& apsp) : _n_modes(tree.num_qubits()) {
     if (_n_modes == 0) return;
 
     _parent.assign(_n_modes, 0);
@@ -84,18 +87,16 @@ TreeOracle::TreeOracle(const TernaryTree& tree, const dvlab::APSPResult<QubitIdT
     _dfs_start.assign(_n_modes, 0);
     _tail_weight.assign(_n_modes, 0.0);
 
-    // Run dfs from root to fill _parent, _depth, _edge_cost_up, _dfs_start
     auto root_node = dynamic_cast<TernaryQubitNode*>(tree.get_root());
     if (!root_node) throw std::runtime_error("Root is not a qubit node");
     int timer = 0;
-    dfs(tree, apsp, timer, root_node->id, root_node->id, 0, 0.0);
+    _dfs(tree, apsp, timer, root_node->id, root_node->id, 0, 0.0);
 
-    // Fill _tail_weight
     for (size_t u = 0; u < _n_modes; ++u) {
         auto u_node = dynamic_cast<TernaryQubitNode*>(tree.get_node_by_index(u));
         if (u_node && u_node->qubit_label.has_value()) {
-            double x_cost   = calc_branch_tail(apsp, u_node, BranchType::left);
-            double y_cost   = calc_branch_tail(apsp, u_node, BranchType::mid);
+            double x_cost   = _calc_branch_tail(apsp, u_node, BranchType::left);
+            double y_cost   = _calc_branch_tail(apsp, u_node, BranchType::mid);
             _tail_weight[u] = (x_cost + y_cost) / 2.0;
         }
     }
@@ -121,18 +122,27 @@ double TreeOracle::get_tree_distance(size_t u, size_t v) const {
     return dist;
 }
 
-double TreeOracle::get_subtree_weight(const std::vector<size_t>& nodes) const {
+double TreeOracle::get_subtree_weight(std::vector<size_t> const& nodes) const {
     if (nodes.empty()) return 0.0;
     if (nodes.size() == 1) return 0.0;
     if (nodes.size() == 2) return get_tree_distance(nodes[0], nodes[1]);
 
+    // Weight of the unique Steiner subtree connecting ``nodes`` on this tree.
+    //
+    // Sort terminals by DFS discovery time so they appear in Euler-tour /
+    // circular order around that subtree. Then
+    //
+    //   w(Steiner) = (1/2) * sum_i dist(t_i, t_{i+1}),   t_{k+1} := t_1.
+    //
+    // This is the same DFS-doubling identity used in the classical MST
+    // 2-approximation for metric Steiner tree (there the host graph is a
+    // metric, so shortcutting only gives an upper bound; here the host is
+    // already a tree, so the identity is exact). See e.g.:
+    //   L. Kou, G. Markowsky, L. Berman, "A fast algorithm for Steiner trees",
+    //   Acta Informatica 15 (1981) 141-145;
+    //   V. V. Vazirani, Approximation Algorithms, Springer, 2001, Ch. 3.
     std::vector<size_t> sorted_nodes = nodes;
-    std::sort(sorted_nodes.begin(), sorted_nodes.end(), [this](size_t a, size_t b) {
-        return _dfs_start[a] < _dfs_start[b];
-    });
-
-    // E.g. for nodes a, b, c, d in sorted order, calculate
-    // dist(a,b) + dist(b,c) + dist(c,d) + dist(d,a)
+    std::ranges::sort(sorted_nodes, std::less<>{}, [this](size_t node) { return _dfs_start[node]; });
     double total_weight = 0.0;
     for (size_t i = 0; i < sorted_nodes.size(); ++i) {
         size_t u = sorted_nodes[i];
@@ -140,227 +150,64 @@ double TreeOracle::get_subtree_weight(const std::vector<size_t>& nodes) const {
         total_weight += get_tree_distance(u, v);
     }
 
-    // Divide by 2 to fix double counting
     return total_weight / 2.0;
 }
 
-// Best proxy: infidelity_cost. Approximates infidelity by multiplying infidelities of two-qubit
-// gates along the interaction path in the ternary tree.
-// TODO: check use of TreeOracle
-double infidelity_cost(const TernaryTree& tree, const FermionHamiltonian& f_ham, const dvlab::APSPResult<QubitIdType>& apsp) {
-    TreeOracle oracle(tree, apsp);
-    double total_infidelity = 0.0;
+ApspPathCost::ApspPathCost(FermionHamiltonian const& f_ham, dvlab::APSPResult<QubitIdType> const& apsp)
+    : _f_ham(f_ham), _apsp(apsp) {}
+
+double ApspPathCost::evaluate(TernaryTree const& tree) const {
+    TreeOracle oracle(tree, _apsp);
+    double total = 0.0;
 
     TernaryTreeMapping mapping(tree);
-    QubitHamiltonian q_ham = qubitize(f_ham, mapping);
+    QubitHamiltonian q_ham = qubitize(_f_ham, mapping);
 
-    for (const auto& term : q_ham) {
-        std::vector<size_t> active_nodes;
-        for (size_t i = 0; i < term.n_qubits(); ++i) {
-            if (!term.is_i(i)) {
-                active_nodes.push_back(i);
-            }
-        }
-
-        // Note: sum because apsp is log fidelities
-        total_infidelity += oracle.get_subtree_weight(active_nodes);
+    for (auto const& term : q_ham) {
+        total += oracle.get_subtree_weight(term.non_identity_qubits());
     }
 
-    return total_infidelity;
+    return total;
 }
 
-// Approximates CNOT count across interaction paths in ternary tree
-double cnot_cost(const TernaryTree& tree, const FermionHamiltonian& f_ham, const dvlab::APSPResult<QubitIdType>& apsp) {
-    TreeOracle oracle(tree, apsp);
-    double total_cost = 0.0;
+PauliWeightCost::PauliWeightCost(FermionHamiltonian const& f_ham) : _f_ham(f_ham) {}
 
+double PauliWeightCost::evaluate(TernaryTree const& tree) const {
     TernaryTreeMapping mapping(tree);
-    QubitHamiltonian q_ham = qubitize(f_ham, mapping);
-
-    for (const auto& term : q_ham) {
-        std::vector<size_t> active_nodes;
-        for (size_t i = 0; i < term.n_qubits(); ++i) {
-            if (!term.is_i(i)) {
-                active_nodes.push_back(i);
-            }
-        }
-
-        total_cost += oracle.get_subtree_weight(active_nodes);
-    }
-
-    return total_cost;
-}
-
-// Counts number of Pauli gates along path in ternary tree.
-double pauli_weight_cost(const TernaryTree& tt, const FermionHamiltonian& f_ham) {
-    TernaryTreeMapping mapping(tt);
-    QubitHamiltonian q_ham = qubitize(f_ham, mapping);
+    QubitHamiltonian q_ham = qubitize(_f_ham, mapping);
 
     double total_weight = 0;
-    for (const auto& term : q_ham) {
-        for (size_t i = 0; i < term.n_qubits(); ++i) {
-            if (!term.is_i(i)) {
-                total_weight += 1.0;
-            }
-        }
+    for (auto const& term : q_ham) {
+        total_weight += static_cast<double>(term.weight());
     }
     return total_weight;
 }
 
-// TODO: combine SA functions below
-/**
- * @brief Optimizes a fermion-to-qubit mapping to minimize proxy infidelity cost.
- * @param initial_tree Initial mapping.
- * @param f_ham Fermionic Hamiltonian to be mapped.
- * @param device Hardware device (required for noise data).
- * @return Optimized TernaryTree mapping.
- */
-TernaryTree infidelity_proxy_optimize_mapping(
+TernaryTree optimize_ternary_tree_mapping(
     TernaryTree const& initial_tree,
-    const FermionHamiltonian& f_ham,
-    const qsyn::device::Device* device) {
+    TernaryTreeCost const& cost,
+    device::Device const* device,
+    std::optional<std::uint32_t> seed) {
     using util::SimulatedAnnealing;
+    using MutateFn = SimulatedAnnealing<TernaryTree, double>::MutateFn;
 
-    if (!device) {
-        throw std::runtime_error("Device is required for infidelity proxy optimization");
+    // Derive independent streams for mutations vs. SA accept/mutate selection.
+    std::uint32_t rotator_seed = 0;
+    std::uint32_t sa_seed      = 0;
+    if (seed.has_value()) {
+        std::seed_seq seq{*seed};
+        std::array<std::uint32_t, 2> seeds{};
+        seq.generate(seeds.begin(), seeds.end());
+        rotator_seed = seeds[0];
+        sa_seed      = seeds[1];
+        fmt::println("SA seed: {} (rotator={}, accept={})", *seed, rotator_seed, sa_seed);
+    } else {
+        std::random_device rd;
+        rotator_seed = rd();
+        sa_seed      = rd();
     }
 
-    // For noise-aware APSP
-    auto noise_aware_cost = [](qsyn::device::Device::QubitPair const& edge, qsyn::device::Device const& dev) -> float {
-        auto const& edge_gates = dev.get_gate_info(edge);
-        auto const& gate_set   = dev.get_gate_set();
-        float error_rate       = 1.0f;
-
-        for (auto const& info : edge_gates) {
-            std::string gate_name = dvlab::str::tolower_string(gate_set[info.gate_idx]);
-            if (gate_name == "cx" || gate_name == "cnot" || gate_name == "ecr" || gate_name == "cz") {
-                error_rate = info.error;
-                break;
-            }
-        }
-
-        if (error_rate >= 1.0f || error_rate < 0.0f) {
-            return std::numeric_limits<float>::infinity();
-        }
-        return -std::log(1.0f - error_rate);
-    };
-
-    auto const fidelity_apsp = device::floyd_warshall(*device, noise_aware_cost);
-
-    std::function<double(TernaryTree const&)> const wrapped_cost_fn =
-        [&](TernaryTree const& tree) -> double { return infidelity_cost(tree, f_ham, fidelity_apsp); };
-
-    TreeRotator rotator;
-
-    using MutateFn = SimulatedAnnealing<TernaryTree, double>::MutateFn;
-
-    auto const mutate_fns = std::vector<MutateFn>{
-        [&](TernaryTree& tree) {
-            rotator.cp_leaf_move(&tree, *device);
-        },
-        [&](TernaryTree& tree) {
-            rotator.root_change(&tree);
-        },
-        [&](TernaryTree& tree) {
-            rotator.pauli_shuffle(&tree);
-        },
-        [&](TernaryTree& tree) {
-            rotator.mode_association_swap(&tree);
-        },
-        [&](TernaryTree& tree) {
-            rotator.majorana_braiding_change(&tree);
-        },
-    };
-
-    auto const sa = SimulatedAnnealing<TernaryTree, double>(
-        /* init_temp    = */ 20.0,
-        /* cooling_rate = */ 0.99995,
-        /* min_temp     = */ 0.3,
-        /* cost_fn      = */ wrapped_cost_fn,
-        /* mutate_fns   = */ mutate_fns);
-
-    auto const [best_tree, best_cost] = sa(initial_tree);
-
-    fmt::println("Final optimized infidelity cost: {} \n", best_cost);
-
-    return best_tree;
-}
-
-/**
- * @brief Optimizes a fermion-to-qubit mapping to minimize proxy cnot count as
-   computed by cnot_cost.
- * @param initial_tree Initital mapping.
- * @param f_ham Fermionic Hamiltonian to be mapped.
- * @param device Hardware device.
- * @return Optimized TernaryTree mapping.
- */
-TernaryTree cnot_proxy_optimize_mapping(
-    TernaryTree const& initial_tree,
-    const FermionHamiltonian& f_ham,
-    const qsyn::device::Device* device) {
-    using util::SimulatedAnnealing;
-
-    if (!device) {
-        throw std::runtime_error("Device is required for cnot proxy optimization");
-    }
-
-    auto apsp = device::floyd_warshall(*device);
-    auto const wrapped_cost_fn =
-        [&](TernaryTree const& tree) { return cnot_cost(tree, f_ham, apsp); };
-    TreeRotator rotator;
-
-    using MutateFn = SimulatedAnnealing<TernaryTree, double>::MutateFn;
-
-    auto const mutate_fns = std::vector<MutateFn>{
-        [&](TernaryTree& tree) {
-            rotator.cp_leaf_move(&tree, *device);
-        },
-        [&](TernaryTree& tree) {
-            rotator.root_change(&tree);
-        },
-        [&](TernaryTree& tree) {
-            rotator.pauli_shuffle(&tree);
-        },
-        [&](TernaryTree& tree) {
-            rotator.mode_association_swap(&tree);
-        },
-        [&](TernaryTree& tree) {
-            rotator.majorana_braiding_change(&tree);
-        },
-    };
-
-    auto const sa = SimulatedAnnealing<TernaryTree, double>(
-        /* init_temp    = */ 20.0,
-        /* cooling_rate = */ 0.99995,
-        /* min_temp     = */ 0.3,
-        /* cost_fn      = */ wrapped_cost_fn,
-        /* mutate_fns   = */ mutate_fns);
-
-    auto const [best_tree, best_cost] = sa(initial_tree);
-
-    fmt::println("Final optimized 'CNOT' count: {} \n", best_cost);
-
-    return best_tree;
-}
-
-/**
- * @brief Optimizes a fermion-to-qubit mapping to minimize Pauli weight.
- * @param initial_tree Initital mapping.
- * @param f_ham Fermionic Hamiltonian to be mapped.
- * @param device (Optional) Hardware device.
- * @return Optimized TernaryTree mapping.
- */
-TernaryTree pauli_weight_optimize_mapping(
-    TernaryTree const& initial_tree,
-    const FermionHamiltonian& f_ham,
-    const qsyn::device::Device* device) {
-    using util::SimulatedAnnealing;
-    auto const wrapped_cost_fn =
-        [&](TernaryTree const& tree) { return pauli_weight_cost(tree, f_ham); };
-    TreeRotator rotator;
-
-    using MutateFn = SimulatedAnnealing<TernaryTree, double>::MutateFn;
-
+    TreeRotator rotator{rotator_seed};
     auto const mutate_fns = std::vector<MutateFn>{
         [&](TernaryTree& tree) {
             if (device) {
@@ -369,31 +216,22 @@ TernaryTree pauli_weight_optimize_mapping(
                 rotator.ncp_leaf_move(&tree);
             }
         },
-        [&](TernaryTree& tree) {
-            rotator.root_change(&tree);
-        },
-        [&](TernaryTree& tree) {
-            rotator.pauli_shuffle(&tree);
-        },
-        [&](TernaryTree& tree) {
-            rotator.mode_association_swap(&tree);
-        },
-        [&](TernaryTree& tree) {
-            rotator.majorana_braiding_change(&tree);
-        },
+        [&](TernaryTree& tree) { rotator.root_change(&tree); },
+        [&](TernaryTree& tree) { rotator.pauli_shuffle(&tree); },
+        [&](TernaryTree& tree) { rotator.mode_association_swap(&tree); },
+        [&](TernaryTree& tree) { rotator.majorana_braiding_change(&tree); },
     };
 
     auto const sa = SimulatedAnnealing<TernaryTree, double>(
         /* init_temp    = */ 20.0,
         /* cooling_rate = */ 0.99995,
         /* min_temp     = */ 0.3,
-        /* cost_fn      = */ wrapped_cost_fn,
-        /* mutate_fns   = */ mutate_fns);
+        /* cost_fn      = */ [&](TernaryTree const& tree) { return cost.evaluate(tree); },
+        /* mutate_fns   = */ mutate_fns,
+        /* seed         = */ sa_seed);
 
-    auto const [best_tree, best_cost] = sa(initial_tree);
-
-    fmt::println("Final optimized Pauli weight: {} \n", best_cost);
-
+    auto const [best_tree, best_cost] = sa.run(initial_tree);
+    fmt::println("Final optimized cost: {}\n", best_cost);
     return best_tree;
 }
 

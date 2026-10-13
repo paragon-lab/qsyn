@@ -4,6 +4,8 @@
   Author       [ April Wang (april864) ]
 */
 
+#include "./proxy_eval.hpp"
+
 #include <fmt/format.h>
 
 #include <algorithm>
@@ -12,6 +14,7 @@
 #include <optional>
 #include <random>
 #include <stack>
+#include <tl/expected.hpp>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -19,15 +22,12 @@
 #include "./bonsai.hpp"
 #include "./ternary_tree.hpp"
 #include "./tree_rotations.hpp"
-#include "./treespile.cpp"
 #include "./treespile.hpp"
 #include "device/device_analysis.hpp"
 #include "hamiltonian/f2q_mappings.hpp"
 #include "qcir/basic_gate_type.hpp"
-#include "tree_optimizations.hpp"
 #include "tableau/pauli_rotation.hpp"
-#include "util/graph/minimum_spanning_arborescence.hpp"
-#include "util/simulated_annealing.hpp"
+#include "tree_optimizations.hpp"
 
 namespace qsyn::hamiltonian {
 
@@ -37,6 +37,64 @@ tableau::PauliRotation to_single_step_rotation(HermitianPauliTerm const& term, d
     return tableau::PauliRotation(
         term.pauli_product(),
         dvlab::Phase::to_phase(2 * term.coeff() * dt, 1e-8));
+}
+
+void apply_random_tree_rotations(TernaryTree& tree, std::mt19937& rng, int mutations = 20) {
+    TreeRotator rotator;
+    for (int m = 0; m < mutations; ++m) {
+        switch (rng() % 4) {
+            case 0:
+                rotator.root_change(&tree);
+                break;
+            case 1:
+                rotator.pauli_shuffle(&tree);
+                break;
+            case 2:
+                rotator.mode_association_swap(&tree);
+                break;
+            default:
+                rotator.majorana_braiding_change(&tree);
+                break;
+        }
+    }
+}
+
+struct ProxyCostSample {
+    double proxy_cost = 0.0;
+    qcir::QCir qcir;
+};
+
+enum class ProxyCostSampleError : std::uint8_t {
+    build_failed,
+    not_routable,
+};
+
+tl::expected<ProxyCostSample, ProxyCostSampleError> generate_proxy_cost_sample(
+    FermionHamiltonian const& hamiltonian,
+    device::Device const& device,
+    device::APSPResult const& apsp,
+    device::APSPResult const& path_cost_apsp,
+    std::mt19937& rng) {
+    auto base_tree = build_bonsai_ternary_tree(device, apsp, hamiltonian.n_modes());
+    if (!base_tree) {
+        return tl::unexpected(ProxyCostSampleError::build_failed);
+    }
+
+    TernaryTree tree = std::move(base_tree.value());
+    apply_random_tree_rotations(tree, rng);
+
+    double const proxy_cost = ApspPathCost(hamiltonian, path_cost_apsp).evaluate(tree);
+
+    auto synthesized = synthesize_hamiltonian_on_tree(
+        hamiltonian, tree, device, apsp, /*time=*/1.0, /*n_trotterization_steps=*/1);
+    if (!synthesized) {
+        return tl::unexpected(ProxyCostSampleError::not_routable);
+    }
+
+    return ProxyCostSample{
+        .proxy_cost = proxy_cost,
+        .qcir       = std::move(synthesized->circuit),
+    };
 }
 
 }  // namespace
@@ -55,96 +113,30 @@ void evaluate_proxy_cost(
         return;
     }
 
-    auto const output_csv = output_dir / output_csv_name;
-
-    auto const apsp = floyd_warshall(device, device::default_floyd_warshall_cost);
+    auto const output_csv    = output_dir / output_csv_name;
+    auto const apsp          = floyd_warshall(device, device::default_floyd_warshall_cost);
+    auto const path_cost_apsp = floyd_warshall(device, device::log_success_rate_floyd_warshall_cost);
 
     std::ofstream csv(output_csv, std::ios::app);
-
-    // Seed randomizer
     std::random_device rd;
     std::mt19937 rng(rd());
 
     for (size_t i = 0; i < samples; ++i) {
         fmt::println("Starting tree {}", i);
-        auto base_tree = build_bonsai_ternary_tree(device, apsp, hamiltonian.n_modes());
-        if (!base_tree) {
-            spdlog::error("Failed to build base tree on sample {}.", i);
-            continue;
-        }
-        TernaryTree tree = std::move(base_tree.value());
-
-        // Apply random tree rotation
-        TreeRotator rotator;
-        for (int m = 0; m < 20; ++m) {
-            int mutation_type = rng() % 4;
-
-            if (mutation_type == 0) {
-                rotator.root_change(&tree);
-            } else if (mutation_type == 1) {
-                rotator.pauli_shuffle(&tree);
-            } else if (mutation_type == 2) {
-                rotator.mode_association_swap(&tree);
-            } else if (mutation_type == 3) {
-                rotator.majorana_braiding_change(&tree);
+        auto sample = generate_proxy_cost_sample(hamiltonian, device, apsp, path_cost_apsp, rng);
+        if (!sample) {
+            if (sample.error() == ProxyCostSampleError::build_failed) {
+                spdlog::error("Failed to build base tree on sample {}.", i);
+            } else {
+                --i;  // retry until we get a routable sample
             }
-        }
-
-        // BEGIN stuff for fidelity_apsp
-        auto noise_aware_cost = [&tree, &device](qsyn::device::Device::QubitPair const& edge, qsyn::device::Device const& dev) -> float {
-            // If edge not in tree, return infinite cost
-            if (!tree.has_edge(edge.src, edge.dst) && !tree.has_edge(edge.dst, edge.src)) {
-                return std::numeric_limits<float>::infinity();
-            }
-
-            auto const& edge_gates = dev.get_gate_info(edge);
-            auto const& gate_set   = dev.get_gate_set();
-            float error_rate       = 1.0f;
-
-            // Find 2-qubit gate
-            for (auto const& info : edge_gates) {
-                std::string name = dvlab::str::tolower_string(gate_set[info.gate_idx]);
-                if (name == "cx" || name == "cnot" || name == "ecr" || name == "cz") {
-                    error_rate = info.error;
-                    break;
-                }
-            }
-
-            // Return log infidelity
-            if (error_rate >= 1.0f || error_rate < 0.0f) {
-                return std::numeric_limits<float>::infinity();
-            }
-            return -std::log(1.0f - error_rate);
-        };
-
-        auto const fidelity_apsp = floyd_warshall(device, noise_aware_cost);
-        // END stuff for fidelity apsp
-
-        // double proxy_cost = fast_tree_cost(tree, hamiltonian, apsp);
-        double proxy_cost = infidelity_cost(tree, hamiltonian, fidelity_apsp);
-
-        qcir::QCir qcir(device.get_num_qubits());
-
-        // Check if circuit can be synthesized on hardware
-        auto mapping  = TernaryTreeMapping(tree);
-        auto q_ham    = qubitize(hamiltonian, mapping);
-        bool routable = true;
-        try {
-            for (const auto& term : q_ham) {
-                synthesize_term(to_single_step_rotation(term), tree, apsp, device, qcir, nullptr);
-            }
-        } catch (...) {
-            routable = false;
-        }
-        if (!routable) {
-            i--;
             continue;
         }
 
         auto const qasm_file = output_dir / fmt::format("sample_{}.qasm", i);
-        qcir.write_qasm(qasm_file);
+        sample->qcir.write_qasm(qasm_file);
 
-        csv << i << "," << proxy_cost << "\n";
+        csv << i << "," << sample->proxy_cost << "\n";
         csv.flush();
     }
 }
@@ -236,7 +228,8 @@ void evaluate_proxy_termwise_depth(
     device::Device const& device,
     std::string const& output_csv,
     size_t samples) {
-    auto const apsp = floyd_warshall(device, device::default_floyd_warshall_cost);
+    auto const apsp          = floyd_warshall(device, device::default_floyd_warshall_cost);
+    auto const path_cost_apsp = floyd_warshall(device, device::log_success_rate_floyd_warshall_cost);
 
     std::ofstream csv(output_csv, std::ios::app);
 
@@ -252,56 +245,12 @@ void evaluate_proxy_termwise_depth(
             continue;
         }
         TernaryTree tree = std::move(base_tree.value());
-
-        // Apply random tree rotations
-        TreeRotator rotator;
-        for (int m = 0; m < 20; ++m) {
-            int mutation_type = rng() % 4;
-
-            if (mutation_type == 0) {
-                rotator.root_change(&tree);
-            } else if (mutation_type == 1) {
-                rotator.pauli_shuffle(&tree);
-            } else if (mutation_type == 2) {
-                rotator.mode_association_swap(&tree);
-            } else if (mutation_type == 3) {
-                rotator.majorana_braiding_change(&tree);
-            }
-        }
-
-        // BEGIN stuff for fidelity_apsp
-        auto noise_aware_cost = [&tree, &device](qsyn::device::Device::QubitPair const& edge, qsyn::device::Device const& dev) -> float {
-            // If edge not in tree, return infinite cost
-            if (!tree.has_edge(edge.src, edge.dst) && !tree.has_edge(edge.dst, edge.src)) {
-                return std::numeric_limits<float>::infinity();
-            }
-
-            auto const& edge_gates = dev.get_gate_info(edge);
-            auto const& gate_set   = dev.get_gate_set();
-            float error_rate       = 1.0f;
-
-            // Find 2-qubit gate
-            for (auto const& info : edge_gates) {
-                std::string name = dvlab::str::tolower_string(gate_set[info.gate_idx]);
-                if (name == "cx" || name == "cnot" || name == "ecr" || name == "cz") {
-                    error_rate = info.error;
-                    break;
-                }
-            }
-
-            // Return log infidelity
-            if (error_rate >= 1.0f || error_rate < 0.0f) {
-                return std::numeric_limits<float>::infinity();
-            }
-            return -std::log(1.0f - error_rate);
-        };
-
-        auto const fidelity_apsp = floyd_warshall(device, noise_aware_cost);
+        apply_random_tree_rotations(tree, rng);
 
         // Tree map on hardware
         auto mapping = TernaryTreeMapping(tree);
         auto q_ham   = qubitize(hamiltonian, mapping);
-        TreeOracle oracle(tree, fidelity_apsp);
+        TreeOracle oracle(tree, path_cost_apsp);
 
         // Initialize circuit
         qcir::QCir full_qcir(device.get_num_qubits());
@@ -315,31 +264,27 @@ void evaluate_proxy_termwise_depth(
         };
         std::vector<TermData> sample_terms(q_ham.n_terms());
 
-        try {
-            size_t term_index = 0;
-            for (const auto& term : q_ham) {
-                // Calculate proxy cost
-                std::vector<size_t> active_nodes;
-                for (size_t i = 0; i < term.n_qubits(); ++i) {
-                    if (!term.is_i(i)) active_nodes.push_back(i);
-                }
-                double term_proxy        = oracle.get_subtree_weight(active_nodes);
-                sample_terms[term_index] = {term_index, term_proxy};
+        size_t term_index = 0;
+        for (const auto& term : q_ham) {
+            // Calculate proxy cost
+            auto const active_nodes  = term.non_identity_qubits();
+            double term_proxy        = oracle.get_subtree_weight(active_nodes);
+            sample_terms[term_index] = {term_index, term_proxy};
 
-                // Calculate contribution to full circuit
-                size_t gates_before = full_qcir.get_gates().size();
-                synthesize_term(to_single_step_rotation(term), tree, apsp, device, full_qcir, nullptr);
-                size_t gates_after = full_qcir.get_gates().size();
-
-                auto const& all_gates = full_qcir.get_gates();
-                for (size_t g = gates_before; g < gates_after; ++g) {
-                    deptharray.next_gate(all_gates[g]->get_qubits(), term_index);
-                }
-
-                term_index++;
+            // Calculate contribution to full circuit
+            size_t gates_before = full_qcir.get_gates().size();
+            if (!try_synthesize_term(to_single_step_rotation(term), tree, apsp, device, full_qcir)) {
+                routable = false;
+                break;
             }
-        } catch (...) {
-            routable = false;
+            size_t gates_after = full_qcir.get_gates().size();
+
+            auto const& all_gates = full_qcir.get_gates();
+            for (size_t g = gates_before; g < gates_after; ++g) {
+                deptharray.next_gate(all_gates[g]->get_qubits(), term_index);
+            }
+
+            term_index++;
         }
 
         if (!routable) {
@@ -367,92 +312,25 @@ void evaluate_proxy_termwise_fidelity(
     device::Device const& device,
     std::string const& output_csv,
     size_t samples) {
-    auto const apsp = floyd_warshall(device, device::default_floyd_warshall_cost);
-
-    auto noise_aware_cost = [](qsyn::device::Device::QubitPair const& edge, qsyn::device::Device const& dev) -> float {
-        // Fetch available gates for this edge
-        auto const& edge_gates = dev.get_gate_info(edge);
-        auto const& gate_set   = dev.get_gate_set();
-
-        float error_rate = 1.0f;
-
-        // Loop through gates on this edge to find the CNOT
-        for (auto const& info : edge_gates) {
-            std::string gate_name = dvlab::str::tolower_string(gate_set[info.gate_idx]);
-            if (gate_name == "cx" || gate_name == "cnot" || gate_name == "ecr" || gate_name == "cz") {
-                error_rate = info.error;
-                break;
-            }
-        }
-
-        if (error_rate >= 1.0f || error_rate < 0.0f) {
-            return std::numeric_limits<float>::infinity();
-        }
-
-        float fidelity = 1.0f - error_rate;
-        return -std::log(fidelity);
-    };
-
-    auto const fidelity_apsp = floyd_warshall(device, noise_aware_cost);
+    auto const apsp          = floyd_warshall(device, device::default_floyd_warshall_cost);
+    auto const path_cost_apsp = floyd_warshall(device, device::log_success_rate_floyd_warshall_cost);
 
     std::ofstream csv(output_csv, std::ios::app);
 
-    // Create random tree
-    // Seed randomizer
     std::random_device rd;
     std::mt19937 rng(rd());
 
     for (size_t i = 0; i < samples; ++i) {
         fmt::println("Starting tree {}", i);
-        auto base_tree = build_bonsai_ternary_tree(device, fidelity_apsp, hamiltonian.n_modes());
+        auto base_tree = build_bonsai_ternary_tree(device, path_cost_apsp, hamiltonian.n_modes());
         if (!base_tree) {
             spdlog::error("Failed to build base tree on sample {}.", i);
             continue;
         }
         TernaryTree tree = std::move(base_tree.value());
+        apply_random_tree_rotations(tree, rng);
 
-        // Apply random tree rotations
-        TreeRotator rotator;
-        for (int m = 0; m < 20; ++m) {
-            int mutation_type = rng() % 4;
-
-            if (mutation_type == 0) {
-                rotator.root_change(&tree);
-            } else if (mutation_type == 1) {
-                rotator.pauli_shuffle(&tree);
-            } else if (mutation_type == 2) {
-                rotator.mode_association_swap(&tree);
-            } else if (mutation_type == 3) {
-                rotator.majorana_braiding_change(&tree);
-            }
-        }
-
-        // Build tree-constrained apsp
-        auto tree_constrained_cost = [&tree, &device](qsyn::device::Device::QubitPair const& edge, qsyn::device::Device const& dev) -> float {
-            if (!tree.has_edge(edge.src, edge.dst) && !tree.has_edge(edge.dst, edge.src)) {
-                return std::numeric_limits<float>::infinity();
-            }
-
-            auto const& edge_gates = dev.get_gate_info(edge);
-            auto const& gate_set   = dev.get_gate_set();
-            float error_rate       = 1.0f;
-
-            for (auto const& info : edge_gates) {
-                std::string name = dvlab::str::tolower_string(gate_set[info.gate_idx]);
-                if (name == "cx" || name == "cnot" || name == "ecr" || name == "cz") {
-                    error_rate = info.error;
-                    break;
-                }
-            }
-
-            if (error_rate >= 1.0f || error_rate < 0.0f) {
-                return std::numeric_limits<float>::infinity();
-            }
-            return -std::log(1.0f - error_rate);
-        };
-
-        auto const tree_apsp = floyd_warshall(device, tree_constrained_cost);
-        TreeOracle oracle(tree, tree_apsp);
+        TreeOracle oracle(tree, path_cost_apsp);
 
         // Tree map on hardware
         auto mapping = TernaryTreeMapping(tree);
@@ -470,42 +348,54 @@ void evaluate_proxy_termwise_fidelity(
         };
         std::vector<TermData> sample_terms(q_ham.n_terms());
 
-        try {
-            size_t term_index = 0;
-            for (const auto& term : q_ham) {
-                // Calculate proxy cost
-                std::vector<size_t> active_nodes;
-                for (size_t i = 0; i < term.n_qubits(); ++i) {
-                    if (!term.is_i(i)) active_nodes.push_back(i);
-                }
+        size_t term_index = 0;
+        for (const auto& term : q_ham) {
+            // Calculate proxy cost
+            auto const active_nodes = term.non_identity_qubits();
 
-                // Calculate proxy fidelity
-                double term_infidelity = 0.0;
-                if (!active_nodes.empty()) {
-                    term_infidelity = 2.0 * oracle.get_subtree_weight(active_nodes);
-                }
+            // Calculate proxy fidelity
+            double term_infidelity = 0.0;
+            if (!active_nodes.empty()) {
+                term_infidelity = 2.0 * oracle.get_subtree_weight(active_nodes);
+            }
 
-                // Calculate actual fidelity
-                size_t gates_before = full_qcir.get_gates().size();
-                synthesize_term(to_single_step_rotation(term), tree, apsp, device, full_qcir, nullptr);
-                size_t gates_after = full_qcir.get_gates().size();
+            // Calculate actual fidelity
+            size_t gates_before = full_qcir.get_gates().size();
+            if (!try_synthesize_term(to_single_step_rotation(term), tree, apsp, device, full_qcir)) {
+                routable = false;
+                break;
+            }
+            size_t gates_after = full_qcir.get_gates().size();
 
-                double actual_cost    = 0.0;
-                auto const& all_gates = full_qcir.get_gates();
+            double actual_cost    = 0.0;
+            auto const& all_gates = full_qcir.get_gates();
 
-                for (size_t g = gates_before; g < gates_after; ++g) {
-                    auto qubits = all_gates[g]->get_qubits();
+            for (size_t g = gates_before; g < gates_after; ++g) {
+                auto qubits = all_gates[g]->get_qubits();
 
-                    if (qubits.size() == 2) {
-                        size_t q0 = qubits[0];
-                        size_t q1 = qubits[1];
+                if (qubits.size() == 2) {
+                    size_t q0 = qubits[0];
+                    size_t q1 = qubits[1];
 
-                        qsyn::device::Device::QubitPair edge{q0, q1};
-                        double edge_error = 1.0;
+                    qsyn::device::Device::QubitPair edge{q0, q1};
+                    double edge_error = 1.0;
 
-                        // Check the forward direction
-                        if (device.is_adjacent(edge)) {
-                            auto const& edge_gates = device.get_gate_info(edge);
+                    // Check the forward direction
+                    if (device.is_adjacent(edge)) {
+                        auto const& edge_gates = device.get_gate_info(edge);
+                        auto const& gate_set   = device.get_gate_set();
+                        for (auto const& info : edge_gates) {
+                            std::string gate_name = dvlab::str::tolower_string(gate_set[info.gate_idx]);
+                            if (gate_name == "cx" || gate_name == "cnot" || gate_name == "ecr" || gate_name == "cz") {
+                                edge_error = info.error;
+                                break;
+                            }
+                        }
+                    } else {
+                        // Check the reverse direction in case the digraph is strictly directional
+                        qsyn::device::Device::QubitPair rev_edge{q1, q0};
+                        if (device.is_adjacent(rev_edge)) {
+                            auto const& edge_gates = device.get_gate_info(rev_edge);
                             auto const& gate_set   = device.get_gate_set();
                             for (auto const& info : edge_gates) {
                                 std::string gate_name = dvlab::str::tolower_string(gate_set[info.gate_idx]);
@@ -514,32 +404,16 @@ void evaluate_proxy_termwise_fidelity(
                                     break;
                                 }
                             }
-                        } else {
-                            // Check the reverse direction in case the digraph is strictly directional
-                            qsyn::device::Device::QubitPair rev_edge{q1, q0};
-                            if (device.is_adjacent(rev_edge)) {
-                                auto const& edge_gates = device.get_gate_info(rev_edge);
-                                auto const& gate_set   = device.get_gate_set();
-                                for (auto const& info : edge_gates) {
-                                    std::string gate_name = dvlab::str::tolower_string(gate_set[info.gate_idx]);
-                                    if (gate_name == "cx" || gate_name == "cnot" || gate_name == "ecr" || gate_name == "cz") {
-                                        edge_error = info.error;
-                                        break;
-                                    }
-                                }
-                            }
                         }
-
-                        double edge_fidelity = 1.0 - edge_error;
-                        actual_cost += -std::log(edge_fidelity);
                     }
-                }
 
-                sample_terms[term_index] = {term_index, term_infidelity, actual_cost};
-                term_index++;
+                    double edge_fidelity = 1.0 - edge_error;
+                    actual_cost += -std::log(edge_fidelity);
+                }
             }
-        } catch (...) {
-            routable = false;
+
+            sample_terms[term_index] = {term_index, term_infidelity, actual_cost};
+            term_index++;
         }
 
         if (!routable) {

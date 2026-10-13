@@ -6,7 +6,9 @@
 
 #include "./fham_cmd.hpp"
 
+#include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 
 #include "argparse/arg_parser.hpp"
@@ -39,26 +41,36 @@ struct FhamQubitizeOutcome {
     bool used_workspace_encoding{false};
 };
 
-TernaryTree optimize_ternary_tree_mapping(
+TernaryTree apply_tree_optimization(
     TernaryTree tree,
     FermionHamiltonian const& f_ham,
     device::DeviceMgr const& device_mgr,
-    bool optimize1,
-    bool optimize2) {
+    unsigned optimize_level,
+    device::APSPCostFnType const& cost_fn,
+    std::optional<std::uint32_t> seed = std::nullopt) {
     device::Device const* dev_ptr = nullptr;
     if (!device_mgr.empty() && device_mgr.get()->get_num_qubits() >= f_ham.n_modes()) {
         dev_ptr = device_mgr.get();
     }
-    if (optimize1 && optimize2) {
-        fmt::println("Warning: Both -o1 and -o2 specified. Defaulting to -o2 (fidelity proxy).");
+    if (optimize_level == 2) {
+        if (!dev_ptr) {
+            throw std::runtime_error("Device is required for APSP path-cost optimization");
+        }
+        fmt::println("Optimizing ternary tree mapping to minimize APSP path cost...");
+        auto const apsp = device::floyd_warshall(*dev_ptr, cost_fn);
+        return optimize_ternary_tree_mapping(
+            tree,
+            ApspPathCost(f_ham, apsp),
+            dev_ptr,
+            seed);
     }
-    if (optimize2) {
-        fmt::println("Optimizing ternary tree mapping to minimize proxy fidelity...");
-        return infidelity_proxy_optimize_mapping(tree, f_ham, dev_ptr);
-    }
-    if (optimize1) {
+    if (optimize_level == 1) {
         fmt::println("Optimizing ternary tree mapping to minimize Pauli weight...");
-        return pauli_weight_optimize_mapping(tree, f_ham, dev_ptr);
+        return optimize_ternary_tree_mapping(
+            tree,
+            PauliWeightCost(f_ham),
+            dev_ptr,
+            seed);
     }
     return tree;
 }
@@ -68,19 +80,20 @@ FhamQubitizeOutcome qubitize_fham_workspace(
     device::DeviceMgr const& device_mgr,
     bool strategy_explicit,
     std::string const& strategy_str,
-    bool optimize1,
-    bool optimize2,
-    device::APSPCostFnType const& cost_fn) {
+    unsigned optimize_level,
+    device::APSPCostFnType const& cost_fn,
+    std::optional<std::uint32_t> seed = std::nullopt) {
     auto const& f_ham = workspace.hamiltonian;
 
     if (!strategy_explicit && workspace.encoding != nullptr) {
         if (auto* tt_enc = dynamic_cast<TernaryTreeMapping*>(workspace.encoding.get())) {
-            if (optimize1 || optimize2) {
-                auto tree          = optimize_ternary_tree_mapping(tt_enc->tree(), f_ham, device_mgr, optimize1, optimize2);
+            if (optimize_level > 0) {
+                auto tree = apply_tree_optimization(
+                    tt_enc->tree(), f_ham, device_mgr, optimize_level, cost_fn, seed);
                 workspace.encoding = std::make_unique<TernaryTreeMapping>(std::move(tree));
             }
-        } else if (optimize1 || optimize2) {
-            fmt::println("Warning: -o1/-o2 only apply to ternary tree encodings; ignoring.");
+        } else if (optimize_level > 0) {
+            fmt::println("Warning: --optimize-level only applies to ternary tree encodings; ignoring.");
         }
 
         return {qubitize(f_ham, *workspace.encoding), true};
@@ -122,7 +135,8 @@ FhamQubitizeOutcome qubitize_fham_workspace(
         initial_tree = TernaryTree(f_ham.n_modes());
     }
 
-    auto tree          = optimize_ternary_tree_mapping(std::move(initial_tree.value()), f_ham, device_mgr, optimize1, optimize2);
+    auto tree = apply_tree_optimization(
+        std::move(initial_tree.value()), f_ham, device_mgr, optimize_level, cost_fn, seed);
     workspace.encoding = std::make_unique<TernaryTreeMapping>(std::move(tree));
     return {qubitize(f_ham, *workspace.encoding), false};
 }
@@ -167,20 +181,24 @@ dvlab::Command fham_qubitize_cmd(FermionHamiltonianMgr& fham_mgr, QubitHamiltoni
                     "Fermion-to-qubit mapping strategy: 'jw' or 'ternary_tree'. "
                     "If omitted, uses the workspace encoding when present, otherwise Jordan-Wigner");
 
-            parser.add_argument<bool>("-o1", "--optimize1")
-                .action(store_true)
-                .help("Run simulated annealing to minimize Pauli weight (only applies to ternary_tree strategy)");
-
-            parser.add_argument<bool>("-o2", "--optimize2")
-                .action(store_true)
-                .help("Run simulated annealing to minimize proxy fidelity (only applies to ternary_tree strategy)");
+            parser.add_argument<unsigned>("-o", "--optimize-level")
+                .choices({0u, 1u, 2u})
+                .default_value(0u)
+                .help(
+                    "ternary-tree SA optimization level (ternary_tree only): "
+                    "0 = none, 1 = Pauli weight, 2 = APSP path cost via --cost-fn (requires device)");
 
             parser.add_argument<std::string>("--cost-fn")
                 .constraint(choices_allow_prefix({"log_proxy_fidelity", "log_success_rate", "default"}))
                 .default_value("default")
                 .help(
-                    "cost function for Floyd-Warshall when building a device bonsai tree "
-                    "(only applies to ternary_tree strategy)");
+                    "Floyd-Warshall edge cost for bonsai tree construction and optimize-level 2 "
+                    "APSP path-cost optimization (only applies to ternary_tree strategy)");
+
+            parser.add_argument<std::uint32_t>("--seed")
+                .help(
+                    "RNG seed for ternary-tree SA optimization (optimize-level > 0). "
+                    "Omit for a nondeterministic seed");
         },
         [&](ArgumentParser const& parser) {
             if (!dvlab::utils::mgr_has_data(fham_mgr)) {
@@ -190,8 +208,7 @@ dvlab::Command fham_qubitize_cmd(FermionHamiltonianMgr& fham_mgr, QubitHamiltoni
             auto* workspace = fham_mgr.get();
 
             bool const strategy_explicit = parser.parsed("--strategy");
-            bool optimize1               = parser.get<bool>("--optimize1");
-            bool optimize2               = parser.get<bool>("--optimize2");
+            auto const optimize_level    = parser.get<unsigned>("--optimize-level");
             auto const cost_fn_str       = parser.get<std::string>("--cost-fn");
             auto cost_fn                 = device::default_floyd_warshall_cost;
             auto const cost_fn_lower     = dvlab::str::tolower_string(cost_fn_str);
@@ -201,14 +218,19 @@ dvlab::Command fham_qubitize_cmd(FermionHamiltonianMgr& fham_mgr, QubitHamiltoni
                 cost_fn = device::log_success_rate_floyd_warshall_cost;
             }
 
+            std::optional<std::uint32_t> seed;
+            if (parser.parsed("--seed")) {
+                seed = parser.get<std::uint32_t>("--seed");
+            }
+
             auto const outcome = qubitize_fham_workspace(
                 *workspace,
                 device_mgr,
                 strategy_explicit,
                 strategy_explicit ? parser.get<std::string>("--strategy") : std::string{},
-                optimize1,
-                optimize2,
-                cost_fn);
+                optimize_level,
+                cost_fn,
+                seed);
 
             size_t id = qbham_mgr.get_next_id();
             qbham_mgr.add(id, std::make_unique<QubitHamiltonian>(std::move(outcome.q_ham)));
@@ -227,7 +249,7 @@ dvlab::Command fham_qubitize_cmd(FermionHamiltonianMgr& fham_mgr, QubitHamiltoni
                                               ? "fham_qubitize_ternary_tree"
                                               : "fham_qubitize_jw";
             }
-            if ((optimize1 || optimize2) &&
+            if (optimize_level > 0 &&
                 dynamic_cast<TernaryTreeMapping const*>(workspace->encoding.get()) != nullptr) {
                 proc_name += "_optimized";
             }
@@ -427,13 +449,15 @@ dvlab::Command fham_treespile_cmd(
             parser.add_argument<std::string>("--cost-fn")
                 .constraint(choices_allow_prefix({"log_proxy_fidelity", "log_success_rate", "default"}))
                 .default_value("default")
-                .help("cost function for Floyd-Warshall used inside treespile");
-            parser.add_argument<bool>("-o1", "--optimize1")
-                .action(store_true)
-                .help("Run simulated annealing to optimize tree for Pauli weight");
-            parser.add_argument<bool>("-o2", "--optimize2")
-                .action(store_true)
-                .help("Run simulated annealing to optimize tree for proxy fidelity (requires device)");
+                .help(
+                    "Floyd-Warshall edge cost for bonsai construction, routing APSP, and "
+                    "optimize-level 2 path-cost optimization");
+            parser.add_argument<unsigned>("-o", "--optimize-level")
+                .choices({0u, 1u, 2u})
+                .default_value(0u)
+                .help(
+                    "ternary-tree SA optimization level: "
+                    "0 = none, 1 = Pauli weight, 2 = APSP path cost via --cost-fn");
             parser.add_argument<bool>("-e", "--exhaustive")
                 .action(store_true)
                 .help("Exhaustively search for the best ternary tree, stemming from all qubits");
@@ -442,6 +466,10 @@ dvlab::Command fham_treespile_cmd(
                 .help(
                     "Label QCir qubits by fermion tree index (0..n-1) instead of physical device "
                     "qubit id; checkout an induced subdevice on the device manager");
+            parser.add_argument<std::uint32_t>("--seed")
+                .help(
+                    "RNG seed for ternary-tree SA optimization (optimize-level > 0). "
+                    "Omit for a nondeterministic seed");
         },
         [&](ArgumentParser const& parser) {
             if (device_mgr.empty()) {
@@ -463,22 +491,26 @@ dvlab::Command fham_treespile_cmd(
                 return dvlab::CmdExecResult::error;
             }
 
-            auto const time        = parser.get<double>("time");
-            auto const cost_fn_str = parser.get<std::string>("--cost-fn");
-            bool optimize1         = parser.get<bool>("--optimize1");
-            bool optimize2         = parser.get<bool>("--optimize2");
-            bool exhaustive        = parser.get<bool>("--exhaustive");
-            bool use_logical_index = parser.get<bool>("--logical-index");
-            auto cost_fn           = device::default_floyd_warshall_cost;
-            auto const cost_fn_lower = dvlab::str::tolower_string(cost_fn_str);
+            auto const time            = parser.get<double>("time");
+            auto const cost_fn_str     = parser.get<std::string>("--cost-fn");
+            auto const optimize_level  = parser.get<unsigned>("--optimize-level");
+            bool exhaustive            = parser.get<bool>("--exhaustive");
+            bool use_logical_index     = parser.get<bool>("--logical-index");
+            auto cost_fn               = device::default_floyd_warshall_cost;
+            auto const cost_fn_lower   = dvlab::str::tolower_string(cost_fn_str);
             if (dvlab::str::is_prefix_of(cost_fn_lower, "log_proxy_fidelity")) {
                 cost_fn = device::log_proxy_fidelity_floyd_warshall_cost;
             } else if (dvlab::str::is_prefix_of(cost_fn_lower, "log_success_rate")) {
                 cost_fn = device::log_success_rate_floyd_warshall_cost;
             }
 
+            std::optional<std::uint32_t> seed;
+            if (parser.parsed("--seed")) {
+                seed = parser.get<std::uint32_t>("--seed");
+            }
+
             auto result = treespile(
-                f_ham, device, time, n_steps, cost_fn, optimize1, optimize2, exhaustive, use_logical_index);
+                f_ham, device, time, n_steps, cost_fn, optimize_level, exhaustive, use_logical_index, seed);
 
             if (!result.has_value()) {
                 auto const reason = result.error();
@@ -494,6 +526,9 @@ dvlab::Command fham_treespile_cmd(
                         break;
                     case TreespileFailReason::invalid_n_trotterization_steps:
                         spdlog::error("treespile failed: invalid number of trotterization steps");
+                        break;
+                    case TreespileFailReason::not_routable:
+                        spdlog::error("treespile failed: could not route Hamiltonian terms on the device");
                         break;
                 }
                 return dvlab::CmdExecResult::error;

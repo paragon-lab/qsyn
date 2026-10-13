@@ -103,6 +103,8 @@ def plot_noise_relative_with_proxy(
     ax.set_xlabel("Trotter steps (n)")
     ax.set_ylabel("Relative improvement (%)")
     ax.set_xticks(ns)
+    if ns:
+        ax.set_xlim(ns[0] - 0.5, ns[-1] + 0.5)
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend(ncol=2, fontsize=8, loc="upper left")
 
@@ -155,6 +157,8 @@ def plot_cost_comparison(
     ax.set_ylabel(f"Mean {ylabel} (avg over t)")
     ax.set_title(f"{name}: mean {ylabel} by cost function")
     ax.set_xticks(ns)
+    if ns:
+        ax.set_xlim(ns[0] - 0.5, ns[-1] + 0.5)
     ax.set_ylim(0, 1)
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend()
@@ -192,6 +196,8 @@ def plot_cost_comparison(
         + r"$(F_{\mathrm{PF}}-F_{\mathrm{u}})/F_{\mathrm{u}}$"
     )
     ax.set_xticks(ns)
+    if ns:
+        ax.set_xlim(ns[0] - 0.5, ns[-1] + 0.5)
     ax.grid(True, linestyle="--", alpha=0.4)
     ax.legend(ncol=2, fontsize=8)
     fig.tight_layout()

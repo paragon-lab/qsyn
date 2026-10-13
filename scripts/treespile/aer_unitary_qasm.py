@@ -38,13 +38,15 @@ def simulate_circuit_file(
     circuit_path: Path,
     max_qubits: int = DEFAULT_MAX_QUBITS,
     label: str = "unitary",
+    *,
+    drop_idle: bool = True,
 ) -> np.ndarray:
     """Load, prepare, and simulate a QASM circuit; return unitary matrix."""
     circuit = load_circuit(circuit_path)
     if circuit.num_qubits == 0:
         raise ValueError("circuit has no qubits")
 
-    circuit, active_indices, _n_register = prepare_circuit(circuit)
+    circuit, active_indices, _n_register = prepare_circuit(circuit, drop_idle=drop_idle)
     n_qubits = circuit.num_qubits
     if n_qubits > max_qubits:
         dim = 2**n_qubits

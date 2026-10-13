@@ -21,6 +21,7 @@ import json
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -96,25 +97,32 @@ def run_qsyn(
     qsyn_path: Path,
     fham_path: Path,
     out_dir: Path,
-    time: float,
+    evol_time: float,
     steps: int,
     device: str,
     cost_fn: str = "default",
+    optimize_level: int = 0,
     exhaustive: bool = False,
-) -> tuple[float, float]:
+    seed: int | None = None,
+) -> tuple[float, float, float]:
+    """Run qsyn synthesis. Returns (esp, proxy_fidelity, synthesis_runtime_sec)."""
     out_dir.mkdir(parents=True, exist_ok=True)
+    seed_flag = f"--seed {seed}" if seed is not None else ""
     cmd = [
         str(qsyn_path),
         str(EXPERIMENT_QSYN),
         str(fham_path.resolve()),
         str(out_dir.resolve()),
-        str(time),
+        str(evol_time),
         str(steps),
         device,
         cost_fn,
+        str(optimize_level),
         "-e" if exhaustive else "",
+        seed_flag,
     ]
     print("+", " ".join(cmd))
+    start = time.perf_counter()
     result = subprocess.run(
         cmd,
         check=True,
@@ -122,8 +130,10 @@ def run_qsyn(
         capture_output=True,
         text=True,
     )
+    synthesis_runtime_sec = time.perf_counter() - start
     _print_qsyn_output(result)
-    return parse_reliability_metrics(result.stdout)
+    esp, proxy = parse_reliability_metrics(result.stdout)
+    return esp, proxy, synthesis_runtime_sec
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -158,6 +168,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="default",
         choices=["default", "log_success_rate", "log_proxy_fidelity"],
         help="Floyd-Warshall cost for ternary-tree / treespile (default: default)",
+    )
+    parser.add_argument(
+        "--optimize-level",
+        type=int,
+        default=0,
+        choices=[0, 1, 2],
+        help=(
+            "ternary-tree SA optimization level for treespile: "
+            "0=none, 1=Pauli weight, 2=APSP path cost via --cost-fn (default: 0)"
+        ),
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="RNG seed for ternary-tree SA (omit for nondeterministic)",
     )
     parser.add_argument(
         "-e",
@@ -251,8 +277,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         esp: float | None = None
         proxy_fidelity: float | None = None
+        synthesis_runtime_sec: float | None = None
         if not args.skip_qsyn:
-            esp, proxy_fidelity = run_qsyn(
+            esp, proxy_fidelity, synthesis_runtime_sec = run_qsyn(
                 qsyn_path,
                 args.fham,
                 out_dir,
@@ -260,7 +287,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.steps,
                 device_name,
                 cost_fn=args.cost_fn,
+                optimize_level=args.optimize_level,
                 exhaustive=args.exhaustive,
+                seed=args.seed,
             )
 
         require_artifacts(paths, need_noisy=False)
@@ -282,7 +311,7 @@ def main(argv: list[str] | None = None) -> int:
 
         print(f"\n=== Noiseless trotter simulation ===")
         u_trot = simulate_noiseless_unitary(
-            paths["qc_t"], max_qubits=args.max_qubits
+            paths["qc_t"], max_qubits=args.max_qubits, drop_idle=False
         )
         np.save(paths["u_trot"], u_trot)
         print(f"Wrote {paths['u_trot']} ({u_trot.shape[0]}×{u_trot.shape[0]})")
@@ -295,12 +324,14 @@ def main(argv: list[str] | None = None) -> int:
                     paths["qc_t"],
                     calibration_path=calibration_path,
                     max_qubits=args.max_superop_qubits,
+                    drop_idle=False,
                 )
             else:
                 s_noisy = simulate_noisy_superop(
                     paths["qc_t"],
                     backend_name=device_name,
                     max_qubits=args.max_superop_qubits,
+                    drop_idle=False,
                 )
             np.save(paths["s_noisy"], s_noisy)
             noisy_path = paths["s_noisy"]
@@ -325,7 +356,10 @@ def main(argv: list[str] | None = None) -> int:
             "trotter_steps": args.steps,
             "device": device_name,
             "cost_fn": args.cost_fn,
+            "optimize_level": args.optimize_level,
             "exhaustive": args.exhaustive,
+            "seed": args.seed,
+            "synthesis_runtime_sec": synthesis_runtime_sec,
             "esp": esp,
             "proxy_fidelity": proxy_fidelity,
             "trotterization_fidelity": metrics.trotterization,
@@ -336,6 +370,8 @@ def main(argv: list[str] | None = None) -> int:
         }
         paths["metrics"].write_text(json.dumps(results, indent=2) + "\n")
         print(f"\nWrote {paths['metrics']}")
+        if synthesis_runtime_sec is not None:
+            print(f"Synthesis runtime: {synthesis_runtime_sec:.3f}s")
 
         if args.verbose:
             print(json.dumps(results, indent=2))

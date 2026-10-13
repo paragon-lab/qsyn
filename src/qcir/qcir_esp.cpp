@@ -51,8 +51,7 @@ tl::expected<EspResult, EspError> calculate_esp(
     }
 
     std::vector<bool> qubit_has_gates(num_qubits, false);
-    double esp       = 1.0;
-    size_t num_gates = 0;
+    double esp = 1.0;
 
     for (auto const* gate : qcir.get_gates()) {
         auto const& op         = gate->get_operation();
@@ -102,7 +101,6 @@ tl::expected<EspResult, EspError> calculate_esp(
         for (auto const qubit : qubits) {
             qubit_has_gates[qubit] = true;
         }
-        ++num_gates;
     }
 
     size_t num_measurements = 0;
@@ -124,7 +122,7 @@ tl::expected<EspResult, EspError> calculate_esp(
 
     return EspResult{
         .esp              = esp,
-        .num_gates        = num_gates,
+        .num_gates        = qcir.get_num_gates(),
         .num_measurements = num_measurements,
     };
 }

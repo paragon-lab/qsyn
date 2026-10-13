@@ -119,10 +119,7 @@ TermSynthesisInfo form_connected_components(
     //
     std::vector<size_t> physical_qubits;
 
-    for (size_t i = 0; i < pauli_product.n_qubits(); i++) {
-        if (pauli_product.is_i(i)) {
-            continue;
-        }
+    for (auto const i : pauli_product.non_identity_qubits()) {
         auto const tree_node = as_qubit_node_or_throw(tree.get_node_by_index(i));
         physical_qubits.push_back(tree_node->qubit_label.value());
     }
@@ -368,11 +365,7 @@ void synthesize_term(
     qcir::QCir conjugation_qcir(num_qubits);
 
     // conjugate by V and H gates to put all Pauli letters to Z
-    for (size_t i = 0; i < pauli_product.n_qubits(); ++i) {
-        if (pauli_product.is_i(i)) {
-            continue;
-        }
-
+    for (auto const i : pauli_product.non_identity_qubits()) {
         auto const qubit_line = layout ? i : as_qubit_node_or_throw(tree.get_node_by_index(i))->qubit_label.value();
         if (pauli_product.is_x(i)) {
             conjugation_qcir.append(qcir::HGate(), {qubit_line});
@@ -405,6 +398,72 @@ void synthesize_term(
 
 }  // namespace
 
+bool try_synthesize_term(
+    tableau::PauliRotation const& rotation,
+    TernaryTree const& tree,
+    device::APSPResult const& apsp,
+    device::Device const& device,
+    qcir::QCir& qcir) {
+    try {
+        synthesize_term(rotation, tree, apsp, device, qcir, nullptr);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+tl::expected<SynthesizedCircuit, TreespileFailReason>
+synthesize_hamiltonian_on_tree(
+    FermionHamiltonian const& hamiltonian,
+    TernaryTree const& tree,
+    device::Device const& device,
+    device::APSPResult const& apsp,
+    double time,
+    size_t n_trotterization_steps,
+    bool use_logical_indices) {
+    if (n_trotterization_steps == 0) {
+        return tl::unexpected(TreespileFailReason::invalid_n_trotterization_steps);
+    }
+
+    auto const mapping     = TernaryTreeMapping(tree);
+    auto qubit_hamiltonian = qubitize(hamiltonian, mapping);
+    size_t steps           = n_trotterization_steps;
+    if (is_all_commutative(qubit_hamiltonian)) {
+        steps = 1;
+    }
+
+    std::optional<LogicalQubitLayout> layout;
+    if (use_logical_indices) {
+        layout.emplace(tree);
+        collect_ancillas_for_hamiltonian(qubit_hamiltonian, tree, apsp, device, *layout);
+    }
+
+    qcir::QCir qcir(use_logical_indices ? layout->num_qubits() : device.get_num_qubits());
+    LogicalQubitLayout const* layout_ptr = layout ? &*layout : nullptr;
+    auto const dt                        = time / static_cast<double>(steps);
+    auto const prtabl                    = trotterize_single_step(qubit_hamiltonian, dt);
+
+    try {
+        for (auto const& rotation : prtabl) {
+            synthesize_term(rotation, tree, apsp, device, qcir, layout_ptr);
+        }
+    } catch (...) {
+        return tl::unexpected(TreespileFailReason::not_routable);
+    }
+
+    if (steps > 1) {
+        auto copy_qcir = qcir;
+        for (size_t i = 1; i < steps; ++i) {
+            qcir.compose(copy_qcir);
+        }
+    }
+
+    SynthesizedCircuit result;
+    result.circuit         = std::move(qcir);
+    result.physical_qubits = use_logical_indices ? layout->physical_qubits : std::vector<QubitIdType>{};
+    return result;
+}
+
 tl::expected<TreespileResult, TreespileFailReason>
 treespile(
     FermionHamiltonian const& hamiltonian,
@@ -412,11 +471,10 @@ treespile(
     double time,
     size_t n_trotterization_steps,
     device::APSPCostFnType const& cost_fn,
-    bool optimize1,
-    bool optimize2,
+    unsigned optimize_level,
     bool exhaustive,
-    bool use_logical_indices) {
-    //
+    bool use_logical_indices,
+    std::optional<std::uint32_t> seed) {
     using FailReason = TreespileFailReason;
 
     if (n_trotterization_steps == 0) {
@@ -432,8 +490,6 @@ treespile(
         return tl::unexpected(FailReason::device_too_small);
     }
 
-    // generate a ternary tree
-
     auto const apsp = floyd_warshall(device, cost_fn);
 
     auto tree = exhaustive
@@ -446,47 +502,28 @@ treespile(
         return tl::unexpected(FailReason::tt_build_failed_not_enough_qubits);
     }
 
-    if (optimize1) {
-        tree = pauli_weight_optimize_mapping(*tree, hamiltonian, &device);
-    } else if (optimize2) {
-        tree = infidelity_proxy_optimize_mapping(*tree, hamiltonian, &device);
+    if (optimize_level == 1) {
+        tree = optimize_ternary_tree_mapping(
+            *tree,
+            PauliWeightCost(hamiltonian),
+            &device,
+            seed);
+    } else if (optimize_level == 2) {
+        tree = optimize_ternary_tree_mapping(
+            *tree,
+            ApspPathCost(hamiltonian, apsp),
+            &device,
+            seed);
     }
 
-    auto const mapping = TernaryTreeMapping(tree.value());
-
-    auto const qubit_hamiltonian = qubitize(hamiltonian, mapping);
-
-    std::optional<LogicalQubitLayout> layout;
-    if (use_logical_indices) {
-        layout.emplace(tree.value());
-        collect_ancillas_for_hamiltonian(qubit_hamiltonian, tree.value(), apsp, device, *layout);
+    auto synthesized = synthesize_hamiltonian_on_tree(
+        hamiltonian, tree.value(), device, apsp, time, n_trotterization_steps, use_logical_indices);
+    if (!synthesized) {
+        return tl::unexpected(synthesized.error());
     }
-
-    qcir::QCir qcir(use_logical_indices ? layout->num_qubits() : device.get_num_qubits());
-
-    // if all terms are commutative, fix trotter steps to 1
-    if (is_all_commutative(qubit_hamiltonian)) {
-        n_trotterization_steps = 1;
-    }
-    auto const dt                        = time / static_cast<double>(n_trotterization_steps);
-    LogicalQubitLayout const* layout_ptr = layout ? &*layout : nullptr;
-
-    auto const prtabl = trotterize_single_step(qubit_hamiltonian, dt);
-
-    for (auto const& rotation : prtabl) {
-        synthesize_term(rotation, tree.value(), apsp, device, qcir, layout_ptr);
-    }
-
-    if (n_trotterization_steps > 1) {
-        auto copy_qcir = qcir;
-        for (size_t i = 1; i < n_trotterization_steps; ++i) {
-            qcir.compose(copy_qcir);
-        }
-    }
-
     TreespileResult result;
-    result.circuit         = std::move(qcir);
-    result.physical_qubits = use_logical_indices ? layout->physical_qubits : std::vector<size_t>{};
+    result.circuit         = std::move(synthesized->circuit);
+    result.physical_qubits = std::move(synthesized->physical_qubits);
     result.encoding        = std::make_unique<TernaryTreeMapping>(std::move(tree.value()));
     return result;
 }

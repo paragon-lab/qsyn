@@ -166,8 +166,10 @@ def plot_fidelity(
     ax.set_yticklabels(
         ["" if abs(y - y_max) < 1e-9 and y_max > 1.0 else f"{y:.1f}" for y in yticks]
     )
-    ax.set_xticks(range(1, 6))
-    ax.set_xlim(0.5, 5.5)
+    all_ns = sorted({n for series in by_time.values() for n in series})
+    ax.set_xticks(all_ns)
+    if all_ns:
+        ax.set_xlim(all_ns[0] - 0.5, all_ns[-1] + 0.5)
     ax.grid(True, which="both", linestyle="--", alpha=0.4)
     ax.legend(title="Evolution time", ncol=2, fontsize=9)
     ax.set_title(title)

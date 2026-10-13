@@ -45,11 +45,7 @@ dvlab::Command qbham_print_cmd(QubitHamiltonianMgr const& qbham_mgr) {
             size_t tpw        = 0;
 
             for (auto const& term : *qbham) {
-                for (size_t i = 0; i < term.n_qubits(); ++i) {
-                    if (!term.is_i(i)) {
-                        tpw++;
-                    }
-                }
+                tpw += term.weight();
             }
 
             fmt::println("Qubit Hamiltonian ({} qubits, {} terms, weight = {})",

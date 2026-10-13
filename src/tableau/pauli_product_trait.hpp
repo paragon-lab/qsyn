@@ -16,6 +16,7 @@
 #include <ranges>
 #include <sul/dynamic_bitset.hpp>
 #include <tl/zip.hpp>
+#include <vector>
 
 #include "util/util.hpp"
 
@@ -189,6 +190,37 @@ public:
     bool is_y(size_t i) const { return is_z_set(i) && is_x_set(i); }
     bool is_z(size_t i) const { return is_z_set(i) && !is_x_set(i); }
 
+    /**
+     * @brief Bitmask of qubits with a non-identity Pauli (X/Y/Z). Size is ``n_qubits()``.
+     *
+     * Built as the bitwise OR of the contiguous Z and X halves of the internal
+     * encoding, so callers can use ``find_first`` / ``find_next`` / ``count``.
+     */
+    sul::dynamic_bitset<> non_identity_mask() const {
+        auto const n = n_qubits();
+        sul::dynamic_bitset<> mask(n);
+        for (size_t i = 0; i < n; ++i) {
+            if (_bitset[i] || _bitset[n + i]) {
+                mask.set(i);
+            }
+        }
+        return mask;
+    }
+
+    /// Number of non-identity Paulis (Pauli weight).
+    size_t weight() const { return non_identity_mask().count(); }
+
+    /// Ascending indices of qubits with a non-identity Pauli.
+    std::vector<size_t> non_identity_qubits() const {
+        auto const mask = non_identity_mask();
+        std::vector<size_t> qubits;
+        qubits.reserve(mask.count());
+        for (auto i = mask.find_first(); i != sul::dynamic_bitset<>::npos; i = mask.find_next(i)) {
+            qubits.push_back(i);
+        }
+        return qubits;
+    }
+
     bool is_neg() const { return _bitset[_r_idx()]; }
 
     PauliProduct& operator*=(PauliProduct const& rhs);
@@ -246,9 +278,7 @@ public:
         return std::ranges::all_of(std::views::iota(0ul, n_qubits()), [this](size_t i) { return is_i(i) || is_z(i); });
     }
 
-    bool is_identity() const {
-        return std::ranges::all_of(std::views::iota(0ul, n_qubits()), [this](size_t i) { return is_i(i); });
-    }
+    bool is_identity() const { return weight() == 0; }
 
     /** @brief Direct access to the underlying bitset (e.g. for hashing or low-level use). */
     sul::dynamic_bitset<> const& bitset() const { return _bitset; }

@@ -1,7 +1,9 @@
-//!ARGS FHAM OUT T N DEVICE COST_FN EXHAUSTIVE_FLAG
+//!ARGS FHAM OUT T N DEVICE COST_FN OPTIMIZE_LEVEL EXHAUSTIVE_FLAG SEED_FLAG
 // Treespile encoding experiment: JW ground truth + TT treespile circuit + Clifford C.
 // Invoked by scripts/treespile/run_experiment.py
+// OPTIMIZE_LEVEL: 0 / 1 / 2 (see fham treespile --optimize-level)
 // EXHAUSTIVE_FLAG: pass "-e" or leave empty
+// SEED_FLAG: pass "--seed <uint>" or leave empty for nondeterministic SA
 
 device fetch -f ${DEVICE}
 fham read ${FHAM}
@@ -10,9 +12,11 @@ qbham write ${OUT}/H_jw.txt
 
 fham read ${FHAM}
 device fetch -f ${DEVICE}
-fham qubitize -s ternary_tree --cost-fn ${COST_FN}
+// Treespile first so workspace encoding is the tree actually used for synthesis.
+fham treespile ${T} ${N} --logical-index --cost-fn ${COST_FN} --optimize-level ${OPTIMIZE_LEVEL} ${EXHAUSTIVE_FLAG} ${SEED_FLAG}
+// Re-qubitize with no -s/-o to match that encoding (do not rebuild or re-SA).
+fham qubitize
 qbham write ${OUT}/H_T.txt
-fham treespile ${T} ${N} --logical-index --cost-fn ${COST_FN} ${EXHAUSTIVE_FLAG}
 qcir write ${OUT}/QC_T_untranspiled.qasm
 qcir translate --qiskit
 qcir write ${OUT}/QC_T.qasm

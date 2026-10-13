@@ -59,39 +59,44 @@ def prepare_subdevice(
     circuit: QuantumCircuit,
     backend_name: str | None,
     calibration_path: str | Path | None = None,
+    *,
+    drop_idle: bool = True,
 ) -> tuple[QuantumCircuit, list[int], int, NoiseModel | None]:
     active_indices = get_active_qubit_indices(circuit)
     if not active_indices:
         raise ValueError("circuit has no gate operations on any qubit")
 
     n_register = circuit.num_qubits
-    if len(active_indices) < n_register:
+    noise_indices = active_indices
+    if drop_idle and len(active_indices) < n_register:
         circuit = circuit_to_active_subcircuit(circuit, active_indices)
+    else:
+        # Keep full register (idle qubits stay as identity lines).
+        noise_indices = list(range(n_register))
 
     if backend_name is None and calibration_path is None:
         raise ValueError("noisy simulation requires --backend or --ibmq-calibration")
 
     if calibration_path is not None:
         bundle = load_calibration(calibration_path)
-        if max(active_indices) >= bundle.num_qubits:
+        if max(noise_indices) >= bundle.num_qubits:
             raise ValueError(
-                f"circuit uses logical qubit indices up to {max(active_indices)}, "
+                f"circuit uses logical qubit indices up to {max(noise_indices)}, "
                 f"but calibration export has only {bundle.num_qubits} qubits"
             )
-        backend = load_sliced_backend(calibration_path)
         full_noise = noise_model_from_calibration(calibration_path)
-        sub_noise = noise_model_for_active_qubits(full_noise, active_indices)
+        sub_noise = noise_model_for_active_qubits(full_noise, noise_indices)
         return circuit, active_indices, n_register, sub_noise
 
     backend = resolve_backend(backend_name)
     n_backend = backend_num_qubits(backend)
-    if n_backend is not None and max(active_indices) >= n_backend:
+    if n_backend is not None and max(noise_indices) >= n_backend:
         raise ValueError(
-            f"circuit uses backend qubit indices up to {max(active_indices)}, "
+            f"circuit uses backend qubit indices up to {max(noise_indices)}, "
             f"but {backend.name} has only {n_backend} qubits"
         )
     full_noise = get_noise_model_from_backend(backend)
-    sub_noise = noise_model_for_active_qubits(full_noise, active_indices)
+    sub_noise = noise_model_for_active_qubits(full_noise, noise_indices)
     return circuit, active_indices, n_register, sub_noise
 
 
@@ -119,13 +124,15 @@ def simulate_circuit_file(
     calibration_path: Path | None = None,
     max_qubits: int = DEFAULT_MAX_QUBITS_SUPEROP,
     label: str = "superop",
+    *,
+    drop_idle: bool = True,
 ) -> np.ndarray:
     circuit = load_circuit(circuit_path)
     if circuit.num_qubits == 0:
         raise ValueError("circuit has no qubits")
 
     circuit, active_indices, _n_register, noise_model = prepare_subdevice(
-        circuit, backend_name, calibration_path
+        circuit, backend_name, calibration_path, drop_idle=drop_idle
     )
     n_qubits = circuit.num_qubits
     if n_qubits > max_qubits:

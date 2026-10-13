@@ -6,6 +6,9 @@
 
 #pragma once
 
+#include <cstdint>
+#include <optional>
+
 #include "device/device.hpp"
 #include "hamiltonian/fermionic_hamiltonian.hpp"
 #include "ternary_tree.hpp"
@@ -13,56 +16,78 @@
 
 namespace qsyn::hamiltonian {
 
-// Oracle for use in infideliy_cost and cnot_cost. Computes tree distances and tail weights.
+// Oracle for APSP-based path costs. Computes tree distances and tail weights.
 class TreeOracle {
 public:
-    TreeOracle(const TernaryTree& tree, const dvlab::APSPResult<QubitIdType>& apsp);
+    TreeOracle(TernaryTree const& tree, dvlab::APSPResult<QubitIdType> const& apsp);
 
     double get_tree_distance(size_t u, size_t v) const;
     double get_tail_weight(size_t u) const { return _tail_weight[u]; }
-    double get_subtree_weight(const std::vector<size_t>& nodes) const;
+    double get_subtree_weight(std::vector<size_t> const& nodes) const;
 
 private:
     size_t _n_modes;
-    std::vector<size_t> _parent;        // _parent[v] gives node v's parent
-    std::vector<int> _depth;            // _depth[v] gives distance from node v to root
-    std::vector<double> _edge_cost_up;  // error of edge from v to its parent
-    std::vector<int> _dfs_start;        // when v was reached in dfs (ie which timestep)
-    std::vector<double> _tail_weight;   // [(dist from v -> S_x^v) + (dist from v -> S_y^v)]/2
+    std::vector<size_t> _parent;
+    std::vector<int> _depth;
+    std::vector<double> _edge_cost_up;
+    std::vector<int> _dfs_start;
+    std::vector<double> _tail_weight;
 
-    void dfs(const TernaryTree& tree, const dvlab::APSPResult<QubitIdType>& apsp, int& timer,
-             size_t v, size_t p, int current_depth, double cost_from_parent);
+    void _dfs(TernaryTree const& tree, dvlab::APSPResult<QubitIdType> const& apsp, int& timer,
+              size_t v, size_t p, int current_depth, double cost_from_parent);
 
-    double calc_branch_tail(const dvlab::APSPResult<QubitIdType>& apsp, TernaryQubitNode* start_node,
-                            BranchType initial_branch);
+    double _calc_branch_tail(dvlab::APSPResult<QubitIdType> const& apsp, TernaryQubitNode* start_node,
+                             BranchType initial_branch);
 };
 
-// Best proxy: infidelity_cost. Approximates infidelity by multiplying infidelities of two-qubit
-// gates along the interaction path in the ternary tree.
-// TODO: check use of TreeOracle
-double infidelity_cost(const TernaryTree& tree, const FermionHamiltonian& f_ham, const dvlab::APSPResult<QubitIdType>& apsp);
+/**
+ * Polymorphic cost model for ternary-tree encodings.
+ * Subclass this to plug a new objective into ``optimize_ternary_tree_mapping``.
+ */
+class TernaryTreeCost {
+public:
+    virtual ~TernaryTreeCost() = default;
 
-// Approximates CNOT count across interaction paths in ternary tree
-double cnot_cost(const TernaryTree& tree, const FermionHamiltonian& f_ham, const dvlab::APSPResult<QubitIdType>& apsp);
+    double operator()(TernaryTree const& tree) const { return evaluate(tree); }
 
-// Counts number of Pauli gates along path in ternary tree.
-double pauli_weight_cost(const TernaryTree& tt, const FermionHamiltonian& f_ham);
+    virtual double evaluate(TernaryTree const& tree) const = 0;
+};
 
-// Simulated annealing loops using the above proxy functions
-// TODO: refactor into one SA loop
-TernaryTree infidelity_proxy_optimize_mapping(
+/**
+ * Sum of APSP-weighted interaction paths over Pauli supports (TreeOracle).
+ * Edge weights in ``apsp`` determine the semantics (e.g. hop count vs log-infidelity).
+ */
+class ApspPathCost : public TernaryTreeCost {
+public:
+    ApspPathCost(FermionHamiltonian const& f_ham, dvlab::APSPResult<QubitIdType> const& apsp);
+
+    double evaluate(TernaryTree const& tree) const override;
+
+protected:
+    FermionHamiltonian const& _f_ham;
+    dvlab::APSPResult<QubitIdType> const& _apsp;
+};
+
+/// Total non-identity Pauli weight after qubitization.
+class PauliWeightCost : public TernaryTreeCost {
+public:
+    explicit PauliWeightCost(FermionHamiltonian const& f_ham);
+
+    double evaluate(TernaryTree const& tree) const override;
+
+private:
+    FermionHamiltonian const& _f_ham;
+};
+
+/**
+ * Simulated annealing over ternary-tree encodings with a polymorphic cost.
+ * When ``device`` is non-null, connectivity-preserving leaf moves are enabled.
+ * ``seed`` fixes SA + mutation RNGs for reproducibility; omit for nondeterministic.
+ */
+TernaryTree optimize_ternary_tree_mapping(
     TernaryTree const& initial_tree,
-    const FermionHamiltonian& f_ham,
-    const qsyn::device::Device* device);
-
-TernaryTree cnot_proxy_optimize_mapping(
-    TernaryTree const& initial_tree,
-    const FermionHamiltonian& f_ham,
-    const qsyn::device::Device* device = nullptr);
-
-TernaryTree pauli_weight_optimize_mapping(
-    TernaryTree const& initial_tree,
-    const FermionHamiltonian& f_ham,
-    const qsyn::device::Device* device = nullptr);
+    TernaryTreeCost const& cost,
+    device::Device const* device         = nullptr,
+    std::optional<std::uint32_t> seed    = std::nullopt);
 
 }  // namespace qsyn::hamiltonian

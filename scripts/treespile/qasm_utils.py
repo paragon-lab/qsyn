@@ -34,14 +34,18 @@ def load_circuit(path: str | Path) -> QuantumCircuit:
     return qasm2.load(str(path), custom_instructions=custom)
 
 
-def prepare_circuit(circuit: QuantumCircuit) -> tuple[QuantumCircuit, list[int], int]:
-    """Drop unused qubits and remap active lines to 0..n-1."""
+def prepare_circuit(
+    circuit: QuantumCircuit,
+    *,
+    drop_idle: bool = True,
+) -> tuple[QuantumCircuit, list[int], int]:
+    """Optionally drop unused qubits and remap active lines to 0..n-1."""
     active_indices = get_active_qubit_indices(circuit)
     if not active_indices:
         raise ValueError("circuit has no gate operations on any qubit")
 
     n_register = circuit.num_qubits
-    if len(active_indices) < n_register:
+    if drop_idle and len(active_indices) < n_register:
         circuit = circuit_to_active_subcircuit(circuit, active_indices)
 
     return circuit, active_indices, n_register

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run electron-4 grid with --cost-fn log_proxy_fidelity: t in 0.1..1.0, n in 1..5."""
+"""Run electron-4 grid with --cost-fn log_proxy_fidelity: t in 0.1..1.0, n in 1..10."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def t_label(t: float) -> str:
 
 def main() -> int:
     runs = []
-    for n in range(1, 6):
+    for n in range(1, 11):
         for i in range(1, 11):
             t = i / 10.0
             out = EXPERIMENT_DIR / f"{t_label(t)}-n{n}"

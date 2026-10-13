@@ -16,6 +16,17 @@ namespace qsyn::hamiltonian {
 
 class TreeRotator {
 public:
+    /// Construct with a nondeterministic seed from ``std::random_device``.
+    TreeRotator() : _rng(std::random_device{}()) {}
+
+    /// Construct with a fixed RNG seed (for reproducible SA / mutations).
+    explicit TreeRotator(std::uint32_t seed) : _rng(seed) {}
+
+    /// Construct with an existing engine (copied).
+    explicit TreeRotator(std::mt19937 rng) : _rng(std::move(rng)) {}
+
+    void seed(std::uint32_t seed) { _rng.seed(seed); }
+
     // For non-connectivity preserving (NCP), choose a random terminal node-v with
     // three legs and attach it to the free leg of another node-w that is neither
     // v nor its parent. For CP random leaf move, choose random move that preserves
@@ -38,7 +49,7 @@ public:
     void majorana_braiding_change(TernaryTree* tt);
 
 private:
-    std::mt19937 _rng{std::random_device{}()};
+    std::mt19937 _rng;
 };
 
 }  // namespace qsyn::hamiltonian

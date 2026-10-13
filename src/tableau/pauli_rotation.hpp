@@ -14,6 +14,7 @@
 #include <ranges>
 #include <sul/dynamic_bitset.hpp>
 #include <tl/zip.hpp>
+#include <vector>
 
 #include "tableau/pauli_product_trait.hpp"
 #include "util/phase.hpp"
@@ -47,6 +48,10 @@ public:
     bool is_x(size_t i) const { return _pauli_product.is_x(i); }
     bool is_y(size_t i) const { return _pauli_product.is_y(i); }
     bool is_z(size_t i) const { return _pauli_product.is_z(i); }
+
+    sul::dynamic_bitset<> non_identity_mask() const { return _pauli_product.non_identity_mask(); }
+    size_t weight() const { return _pauli_product.weight(); }
+    std::vector<size_t> non_identity_qubits() const { return _pauli_product.non_identity_qubits(); }
 
     PauliProduct const& pauli_product() const { return _pauli_product; }
     dvlab::Phase const& phase() const { return _phase; }
